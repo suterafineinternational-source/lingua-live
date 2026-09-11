@@ -36,6 +36,7 @@
           <input id="audience-pin" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="1234">
           <label for="create-glossary">Glossary <span class="meta">one entry per line</span></label>
           <textarea id="create-glossary" placeholder="ACoS = ACoS&#10;Seller Central = Seller Central"></textarea>
+          <p class="meta">Dedicated Realtime Translation is optimized for continuous low-latency interpretation but does not support custom prompts or glossaries. Glossary terms are applied only when the server is configured in prompted compatibility mode.</p>
           <button id="create-room" type="button">Create event</button>
         </article>
         <aside class="card third">
@@ -83,6 +84,7 @@
         <article class="card two-thirds">
           <h2>Glossary</h2>
           <textarea id="room-glossary"></textarea>
+          <p class="meta">If the active engine is Dedicated Realtime Translation, changes are stored but cannot be injected as custom model instructions. The live status message identifies the engine behavior.</p>
           <button id="save-glossary" class="secondary">Update terminology</button>
         </article>
       </section>
