@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Host an Italian to English live interpretation room.">
+    <title>Host · Lingua Live</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">Li</span> Lingua Live</div>
+        <span class="role-pill">Host</span>
+      </header>
+
+      <section class="hero">
+        <p class="eyebrow">Italian → English</p>
+        <h1>One voice.<br>Every listener.</h1>
+        <p class="lede">Create a room, share the invitation, then stream live English captions and translated audio from your microphone.</p>
+      </section>
+
+      <p id="error" class="error hidden" role="alert"></p>
+
+      <section id="create-panel" class="grid">
+        <article class="card two-thirds">
+          <h2>Create a room</h2>
+          <label for="create-glossary">Session glossary <span class="meta">(optional, one entry per line)</span></label>
+          <textarea id="create-glossary" placeholder="Sutera = Sutera&#10;Consiglio comunale = Town Council"></textarea>
+          <div class="controls">
+            <button id="create-room" type="button">Create host room</button>
+          </div>
+        </article>
+        <aside class="card third">
+          <h2>How it works</h2>
+          <p class="meta">The microphone is sent to this server. Only one server-side OpenAI Realtime session is used, regardless of listener count.</p>
+        </aside>
+      </section>
+
+      <section id="room-panel" class="grid hidden" aria-live="polite">
+        <article class="card half">
+          <span id="room-status" class="status-pill" data-state="created">Created</span>
+          <p class="meta">Room code</p>
+          <h2 id="room-code" class="room-code"></h2>
+          <p><a id="invite-link" class="invite" href="#"></a></p>
+          <div class="controls">
+            <button id="copy-link" class="secondary" type="button">Copy invite link</button>
+          </div>
+          <img id="qr-code" class="qr" alt="QR code for the audience invite">
+        </article>
+
+        <article class="card half">
+          <h2>Live control</h2>
+          <p><strong id="listener-count">0</strong> audience listeners connected</p>
+          <p id="service-status" class="notice">Ready to start.</p>
+          <div class="controls">
+            <button id="start-room" type="button">Start interpretation</button>
+            <button id="end-room" class="danger" type="button">End room</button>
+          </div>
+        </article>
+
+        <article class="card two-thirds">
+          <h2>Glossary</h2>
+          <label for="room-glossary">One preferred term or translation per line</label>
+          <textarea id="room-glossary"></textarea>
+          <button id="save-glossary" class="secondary" type="button">Save glossary</button>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="/host.js"></script>
+  </body>
+</html>
