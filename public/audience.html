@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Listen to a live English interpretation.">
+    <title>Audience · Lingua Live</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell audience-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">Li</span> Lingua Live</div>
+        <span class="role-pill">Audience · <span id="room-code"></span></span>
+      </header>
+
+      <p id="error" class="error hidden" role="alert"></p>
+      <section class="caption-stage" aria-label="Live English captions" aria-live="polite">
+        <div id="caption-history" class="caption-history"></div>
+        <p id="caption-current" class="caption current">Waiting for the host to speak…</p>
+      </section>
+
+      <footer class="listener-bar">
+        <div>
+          <span id="live-pulse" class="pulse"></span>
+          <strong id="connection-status">Connecting…</strong>
+          <span class="meta"> · <span id="listener-count">0</span> listening</span>
+        </div>
+        <button id="enable-audio" type="button">Enable translated audio</button>
+      </footer>
+    </main>
+    <script type="module" src="/audience.js"></script>
+  </body>
+</html>
