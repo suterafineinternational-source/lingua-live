@@ -1,10 +1,11 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
 
 const el = Object.fromEntries([
-  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript"
+  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary"
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 let room, hostToken, socket, reconnectTimer, mediaStream, audioContext, captureNode;
+let recorder, recordingChunks = [], recordingBlob;
 let reconnectAttempt = 0;
 let shouldConnect = false;
 let sourceCurrent = "", targetCurrent = "";
@@ -17,6 +18,11 @@ function appendLine(container, text) {
   if (!text?.trim()) return;
   const p = document.createElement("p"); p.className = "transcript-line"; p.textContent = text.trim(); container.append(p);
   while (container.children.length > 80) container.firstElementChild.remove();
+}
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderRoom(nextRoom) {
@@ -32,7 +38,11 @@ function renderRoom(nextRoom) {
   el.end_room.disabled = room.status === "ended";
   el.save_glossary.disabled = room.status === "ended";
   if (room.glossary) el.room_glossary.value = room.glossary.join("\n");
-  if (room.status === "ended") { shouldConnect = false; stopCapture(); setText(el.service_status, "This event has ended."); }
+  if (room.status === "ended") {
+    shouldConnect = false;
+    stopCapture();
+    setText(el.service_status, "This event has ended.");
+  }
   if (hostToken) el.download_transcript.href = `/api/rooms/${room.code}/transcript.csv?download=1`;
 }
 
@@ -72,6 +82,29 @@ function bytesToBase64(buffer) {
   const bytes = new Uint8Array(buffer); let binary = ""; for (let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]); return btoa(binary);
 }
 
+function beginRecording() {
+  recordingBlob = null;
+  recordingChunks = [];
+  el.download_recording.classList.add("hidden");
+  if (!el.record_source.checked || !mediaStream || !window.MediaRecorder) return;
+  const audioOnly = new MediaStream(mediaStream.getAudioTracks());
+  if (!audioOnly.getAudioTracks().length) return;
+  try {
+    recorder = new MediaRecorder(audioOnly);
+    recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) recordingChunks.push(event.data); });
+    recorder.addEventListener("stop", () => {
+      if (!recordingChunks.length) return;
+      recordingBlob = new Blob(recordingChunks, { type: recorder.mimeType || "audio/webm" });
+      el.download_recording.classList.remove("hidden");
+      setText(el.service_status, "Event stopped. Local source recording is ready to download.");
+    });
+    recorder.start(1000);
+  } catch (error) {
+    recorder = null;
+    showError(new Error(`Local recording could not start: ${error.message}`));
+  }
+}
+
 async function startCapture() {
   if (mediaStream) return;
   try {
@@ -86,6 +119,7 @@ async function startCapture() {
     if (error?.name === "NotAllowedError") throw new Error("Audio permission was denied. Allow microphone/screen audio access and try again.");
     throw error;
   }
+  beginRecording();
   audioContext = new AudioContext();
   await audioContext.audioWorklet.addModule("/pcm-worklet.js"); await audioContext.resume();
   const source = audioContext.createMediaStreamSource(mediaStream); captureNode = new AudioWorkletNode(audioContext, "pcm-capture");
@@ -94,7 +128,11 @@ async function startCapture() {
 }
 
 function stopCapture() {
-  captureNode?.disconnect(); captureNode = null; mediaStream?.getTracks().forEach((track) => track.stop()); mediaStream = null; audioContext?.close(); audioContext = null;
+  if (recorder?.state === "recording") recorder.stop();
+  recorder = null;
+  captureNode?.disconnect(); captureNode = null;
+  mediaStream?.getTracks().forEach((track) => track.stop()); mediaStream = null;
+  audioContext?.close(); audioContext = null;
 }
 
 el.create_room.addEventListener("click", async () => {
@@ -140,8 +178,23 @@ el.download_transcript.addEventListener("click", async (event) => {
   try {
     const response = await fetch(`/api/rooms/${room.code}/transcript.csv`, { headers: { Authorization: `Bearer ${hostToken}` } });
     if (!response.ok) throw new Error("Transcript export failed.");
-    const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `lingua-live-${room.code}.csv`; a.click(); URL.revokeObjectURL(url);
+    downloadBlob(await response.blob(), `lingua-live-${room.code}.csv`);
   } catch (error) { showError(error); }
+});
+
+el.download_summary.addEventListener("click", async () => {
+  try {
+    const response = await fetch(`/api/rooms/${room.code}/summary`, { headers: { Authorization: `Bearer ${hostToken}` } });
+    if (!response.ok) throw new Error("Event summary export failed.");
+    const body = await response.json();
+    downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: "application/json" }), `lingua-live-${room.code}-summary.json`);
+  } catch (error) { showError(error); }
+});
+
+el.download_recording.addEventListener("click", () => {
+  if (!recordingBlob) return;
+  const extension = recordingBlob.type.includes("ogg") ? "ogg" : recordingBlob.type.includes("mp4") ? "m4a" : "webm";
+  downloadBlob(recordingBlob, `lingua-live-${room?.code || "event"}-source.${extension}`);
 });
 
 async function restoreRoom() {
