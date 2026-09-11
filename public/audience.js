@@ -2,163 +2,85 @@ import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
-  roomCode: document.querySelector("#room-code"),
-  error: document.querySelector("#error"),
-  history: document.querySelector("#caption-history"),
-  current: document.querySelector("#caption-current"),
-  connection: document.querySelector("#connection-status"),
-  listenerCount: document.querySelector("#listener-count"),
-  pulse: document.querySelector("#live-pulse"),
-  enableAudio: document.querySelector("#enable-audio"),
+  roomCode: document.querySelector("#room-code"), error: document.querySelector("#error"), history: document.querySelector("#caption-history"), current: document.querySelector("#caption-current"), connection: document.querySelector("#connection-status"), listenerCount: document.querySelector("#listener-count"), pulse: document.querySelector("#live-pulse"), enableAudio: document.querySelector("#enable-audio"), volume: document.querySelector("#volume"), pinPanel: document.querySelector("#pin-panel"), audiencePin: document.querySelector("#audience-pin"), joinRoom: document.querySelector("#join-room"), captionStage: document.querySelector("#caption-stage"), eventTitle: document.querySelector("#event-title"), languagePair: document.querySelector("#language-pair"),
 };
 
-let socket;
-let reconnectAttempt = 0;
-let reconnectTimer;
-let shouldConnect = true;
-let activeResponse;
-let activeText = "";
+let socket, reconnectTimer, admissionToken;
+let reconnectAttempt = 0, shouldConnect = true, activeResponse, activeText = "";
 
 class PcmPlayer {
-  constructor() {
-    this.context = null;
-    this.nextStart = 0;
-    this.pending = [];
-  }
-
+  constructor() { this.context = null; this.nextStart = 0; this.pending = []; this.gain = null; this.volume = 1; }
   async enable() {
     this.context ||= new AudioContext({ sampleRate: 24000 });
-    await this.context.resume();
-    for (const chunk of this.pending.splice(0)) this.play(chunk);
+    this.gain ||= this.context.createGain(); this.gain.gain.value = this.volume; this.gain.connect(this.context.destination);
+    await this.context.resume(); for (const chunk of this.pending.splice(0)) this.play(chunk);
   }
-
-  enqueue(base64) {
-    if (!this.context || this.context.state !== "running") {
-      this.pending.push(base64);
-      if (this.pending.length > 50) this.pending.shift();
-      return;
-    }
-    this.play(base64);
-  }
-
+  setVolume(value) { this.volume = Number(value); if (this.gain) this.gain.gain.value = this.volume; }
+  enqueue(base64) { if (!this.context || this.context.state !== "running") { this.pending.push(base64); if (this.pending.length > 50) this.pending.shift(); return; } this.play(base64); }
   play(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    const pcm = new Int16Array(bytes.buffer);
-    const buffer = this.context.createBuffer(1, pcm.length, 24000);
-    const channel = buffer.getChannelData(0);
-    for (let index = 0; index < pcm.length; index += 1) channel[index] = pcm[index] / 32768;
-    const source = this.context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(this.context.destination);
-    const start = Math.max(this.context.currentTime + 0.025, this.nextStart);
-    source.start(start);
-    this.nextStart = start + buffer.duration;
+    const binary = atob(base64), bytes = new Uint8Array(binary.length); for (let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+    const pcm = new Int16Array(bytes.buffer), buffer = this.context.createBuffer(1, pcm.length, 24000), channel = buffer.getChannelData(0);
+    for (let i=0;i<pcm.length;i++) channel[i] = pcm[i] / 32768;
+    const source = this.context.createBufferSource(); source.buffer = buffer; source.connect(this.gain);
+    const start = Math.max(this.context.currentTime + 0.025, this.nextStart); source.start(start); this.nextStart = start + buffer.duration;
   }
-
-  reset() {
-    this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
-  }
+  reset() { this.pending = []; this.nextStart = this.context?.currentTime || 0; }
 }
-
 const player = new PcmPlayer();
 
-function showError(error) {
-  elements.error.textContent = error?.message || "Something went wrong.";
-  elements.error.classList.remove("hidden");
-}
-
-function addCaption(text) {
-  if (!text?.trim()) return;
-  const paragraph = document.createElement("p");
-  paragraph.className = "caption";
-  paragraph.textContent = text.trim();
-  elements.history.append(paragraph);
-  while (elements.history.children.length > 4) elements.history.firstElementChild.remove();
-}
+function showError(error) { elements.error.textContent = error?.message || "Something went wrong."; elements.error.classList.remove("hidden"); }
+function clearError() { elements.error.classList.add("hidden"); elements.error.textContent = ""; }
+function addCaption(text) { if (!text?.trim()) return; const p = document.createElement("p"); p.className = "caption"; p.textContent = text.trim(); elements.history.append(p); while (elements.history.children.length > 6) elements.history.firstElementChild.remove(); }
 
 function updateRoom(room) {
   const live = room.status === "live";
   elements.pulse.classList.toggle("live", live);
   setText(elements.connection, live ? "Live interpretation" : room.status === "ended" ? "Room ended" : "Waiting for host");
   setText(elements.listenerCount, String(room.listenerCount));
-  if (room.status === "ended") {
-    shouldConnect = false;
-    player.reset();
-    elements.current.textContent = "This room has ended.";
-  }
+  setText(elements.eventTitle, room.title || "Live interpretation");
+  setText(elements.languagePair, `${room.sourceLanguage?.toUpperCase() || "IT"} → ${room.targetLanguage?.toUpperCase() || "EN"}`);
+  if (room.status === "ended") { shouldConnect = false; player.reset(); elements.current.textContent = "This event has ended."; }
 }
 
 function handleEvent(event) {
-  if (event.type === "session.ready") {
-    updateRoom(event.room);
-    for (const item of event.history || []) addCaption(item.transcript);
-  }
+  if (event.type === "session.ready") { updateRoom(event.room); for (const item of event.history || []) addCaption(item.transcript); }
   if (event.type === "room.status" || event.type === "room.ended") updateRoom(event.room);
   if (event.type === "presence") setText(elements.listenerCount, String(event.listenerCount));
   if (event.type === "speaker.status") elements.pulse.classList.toggle("live", event.speaking);
-  if (event.type === "transcript.delta") {
-    if (activeResponse && activeResponse !== event.responseId) addCaption(activeText);
-    if (activeResponse !== event.responseId) activeText = "";
-    activeResponse = event.responseId;
-    activeText += event.delta;
-    elements.current.textContent = activeText;
-  }
-  if (event.type === "transcript.done") {
-    const finalText = event.transcript || activeText;
-    addCaption(finalText);
-    activeResponse = null;
-    activeText = "";
-    elements.current.textContent = "Listening…";
-  }
+  if (event.type === "transcript.delta") { if (activeResponse && activeResponse !== event.responseId) addCaption(activeText); if (activeResponse !== event.responseId) activeText = ""; activeResponse = event.responseId; activeText += event.delta; elements.current.textContent = activeText; }
+  if (event.type === "transcript.done") { const finalText = event.transcript || activeText; addCaption(finalText); activeResponse = null; activeText = ""; elements.current.textContent = "Listening…"; }
   if (event.type === "audio.delta") player.enqueue(event.audio);
   if (event.type === "service.status") setText(elements.connection, event.message);
   if (event.type === "service.error" || event.type === "client.error") showError(event.error);
 }
 
 function connect() {
-  clearTimeout(reconnectTimer);
-  setText(elements.connection, reconnectAttempt ? "Reconnecting…" : "Connecting…");
-  socket = new WebSocket(
-    webSocketUrl({ room: roomCode, role: "audience", clientId: clientId(`lingua-audience-${roomCode}`) }),
-  );
-  socket.addEventListener("open", () => {
-    reconnectAttempt = 0;
-    socket.send(JSON.stringify({ type: "client.ready" }));
-  });
-  socket.addEventListener("message", (message) => handleEvent(JSON.parse(message.data)));
-  socket.addEventListener("close", () => {
-    if (!shouldConnect) return;
-    const delay = reconnectDelay(reconnectAttempt++);
-    setText(elements.connection, `Reconnecting in ${Math.ceil(delay / 1000)}s…`);
-    reconnectTimer = setTimeout(connect, delay);
-  });
+  clearTimeout(reconnectTimer); setText(elements.connection, reconnectAttempt ? "Reconnecting…" : "Connecting…");
+  socket = new WebSocket(webSocketUrl({ room: roomCode, role: "audience", clientId: clientId(`lingua-audience-${roomCode}`), admission: admissionToken }));
+  socket.addEventListener("open", () => { reconnectAttempt = 0; socket.send(JSON.stringify({ type: "client.ready" })); });
+  socket.addEventListener("message", ({ data }) => handleEvent(JSON.parse(data)));
+  socket.addEventListener("close", () => { if (!shouldConnect) return; const delay = reconnectDelay(reconnectAttempt++); setText(elements.connection, `Reconnecting in ${Math.ceil(delay/1000)}s…`); reconnectTimer = setTimeout(connect, delay); });
   socket.addEventListener("error", () => setText(elements.connection, "Connection interrupted"));
 }
 
-elements.enableAudio.addEventListener("click", async () => {
-  try {
-    await player.enable();
-    elements.enableAudio.textContent = "Translated audio on";
-    elements.enableAudio.disabled = true;
-  } catch (error) {
-    showError(error);
-  }
-});
+async function admit(pin) {
+  const payload = await api(`/api/rooms/${roomCode}/admit`, { method: "POST", body: JSON.stringify({ pin }) });
+  admissionToken = payload.admissionToken; sessionStorage.setItem(`lingua-admission-${roomCode}`, admissionToken); elements.pinPanel.classList.add("hidden"); clearError(); connect();
+}
+
+elements.joinRoom.addEventListener("click", async () => { try { elements.joinRoom.disabled = true; await admit(elements.audiencePin.value); } catch (error) { showError(error); elements.joinRoom.disabled = false; } });
+elements.enableAudio.addEventListener("click", async () => { try { await player.enable(); elements.enableAudio.textContent = "Translated audio on"; elements.enableAudio.disabled = true; } catch (error) { showError(error); } });
+elements.volume.addEventListener("input", () => player.setVolume(elements.volume.value));
 
 async function initialize() {
   setText(elements.roomCode, roomCode);
   try {
-    const payload = await api(`/api/rooms/${roomCode}`);
-    updateRoom(payload.room);
-    if (payload.room.status !== "ended") connect();
-  } catch (error) {
-    shouldConnect = false;
-    showError(error);
-    setText(elements.connection, "Room unavailable");
-  }
+    const payload = await api(`/api/rooms/${roomCode}`); updateRoom(payload.room);
+    if (payload.room.status === "ended") return;
+    admissionToken = sessionStorage.getItem(`lingua-admission-${roomCode}`);
+    if (payload.room.pinRequired && !admissionToken) { elements.pinPanel.classList.remove("hidden"); setText(elements.connection, "PIN required"); return; }
+    if (!admissionToken) { const admitted = await api(`/api/rooms/${roomCode}/admit`, { method: "POST", body: JSON.stringify({}) }); admissionToken = admitted.admissionToken; }
+    connect();
+  } catch (error) { shouldConnect = false; showError(error); setText(elements.connection, "Room unavailable"); }
 }
-
 initialize();
