@@ -10,14 +10,15 @@ function languageName(code) {
 }
 
 function translationInstructions(glossary, sourceLanguage = "it", targetLanguage = "en") {
+  const target = languageName(targetLanguage);
   const terms = glossary.length
     ? `\nUse these glossary entries exactly when relevant:\n${glossary.map((entry) => `- ${entry}`).join("\n")}`
     : "";
   return [
     "You are a professional live interpreter.",
-    `Translate every ${languageName(sourceLanguage)} utterance into natural ${languageName(targetLanguage)}.`,
+    `Translate every ${languageName(sourceLanguage)} utterance into natural ${target}.`,
     "Preserve meaning, tone, names, numbers and terminology.",
-    "Respond only with the translation. Do not answer the speaker or add commentary.",
+    `Respond only with the ${target} translation. Do not answer the speaker or add commentary.`,
     "Keep pace with the speaker and use fluent phrasing suitable for live captions.",
     terms,
   ].join(" ");
