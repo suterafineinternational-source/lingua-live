@@ -17,7 +17,7 @@
       <section class="hero">
         <p class="eyebrow">Realtime interpretation</p>
         <h1>Run a live multilingual webinar.</h1>
-        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive professional English audio, live captions and your shared webinar screen.</p>
+        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive English audio, live captions and your shared webinar screen.</p>
       </section>
       <p id="error" class="error hidden" role="alert"></p>
 
@@ -86,8 +86,9 @@
             <button id="share-screen" class="secondary">Share screen to audience</button>
             <button id="end-room" class="danger">End event</button>
           </div>
+          <p id="monitor-status" class="notice">English monitor OFF.</p>
           <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
-          <p class="meta">“Monitor English audio” lets you hear exactly what is being sent to guests. Listener status below confirms whether each guest enabled audio and is actually receiving translated chunks.</p>
+          <p class="meta">The monitor now reports translated audio chunks received and actually scheduled for playback, so you can verify the English stream from the Host console.</p>
         </article>
 
         <article class="card half transcript-card">
@@ -112,11 +113,11 @@
         <article class="card two-thirds">
           <h2>Glossary</h2>
           <textarea id="room-glossary"></textarea>
-          <p class="meta">Terminology control is available in prompted professional-voice mode.</p>
+          <p class="meta">The dedicated translation model does not currently accept custom prompts; glossary behavior depends on the selected engine mode.</p>
           <button id="save-glossary" class="secondary">Update terminology</button>
         </article>
       </section>
     </main>
-    <script type="module" src="/host.js"></script>
+    <script type="module" src="/host.js?v=20260911-2"></script>
   </body>
 </html>
