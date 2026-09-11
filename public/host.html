@@ -39,10 +39,9 @@
           <button id="create-room" type="button">Create event</button>
         </article>
         <aside class="card third">
-          <h2>Source</h2>
-          <label><input type="radio" name="source" value="microphone" checked> Microphone</label>
-          <label><input type="radio" name="source" value="display"> Zoom / Google Meet / browser tab</label>
-          <p class="meta">For Zoom or Google Meet, open the meeting in Chrome and choose the meeting tab with “Share tab audio” enabled when prompted.</p>
+          <h2>Audio source</h2>
+          <p>You will choose <strong>Microphone</strong> or <strong>Zoom / Google Meet / Browser Tab</strong> in the Live control panel immediately after creating the event.</p>
+          <p class="meta">The browser-tab mode uses Chrome's screen/tab picker and requires “Share tab audio” for Zoom/Meet audio.</p>
           <hr>
           <label><input id="record-source" type="checkbox"> Record source audio locally</label>
           <p class="meta">Off by default. Enable only with the required participant consent.</p>
@@ -67,13 +66,27 @@
         <article class="card half">
           <h2>Live control</h2>
           <p><strong id="listener-count">0</strong> listeners</p>
+
+          <div class="live-source-panel" aria-label="Choose live audio source">
+            <p class="live-source-title">1. Choose live audio source</p>
+            <label class="source-choice">
+              <input type="radio" name="source" value="microphone" checked>
+              <span><strong>Microphone</strong><small>Use your Mac/PC microphone while you speak.</small></span>
+            </label>
+            <label class="source-choice">
+              <input type="radio" name="source" value="display">
+              <span><strong>Zoom / Google Meet / Browser Tab</strong><small>Choose the meeting tab and enable “Share tab audio” in Chrome.</small></span>
+            </label>
+          </div>
+
           <p id="service-status" class="notice">Ready to start.</p>
           <div class="controls">
-            <button id="start-room">Start interpretation</button>
+            <button id="start-room">2. Start interpretation</button>
             <button id="monitor-audio" class="secondary">Monitor English audio</button>
             <button id="share-screen" class="secondary">Share screen to audience</button>
             <button id="end-room" class="danger">End event</button>
           </div>
+          <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
           <p class="meta">“Monitor English audio” lets you hear exactly what is being sent to guests. Listener status below confirms whether each guest enabled audio and is actually receiving translated chunks.</p>
         </article>
 
