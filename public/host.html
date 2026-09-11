@@ -3,67 +3,79 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Host an Italian to English live interpretation room.">
+    <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
-        <div class="brand"><span class="brand-mark" aria-hidden="true">Li</span> Lingua Live</div>
-        <span class="role-pill">Host</span>
+        <div class="brand"><span class="brand-mark">Li</span> Lingua Live</div>
+        <span class="role-pill">Host Console</span>
       </header>
 
       <section class="hero">
-        <p class="eyebrow">Italian → English</p>
-        <h1>One voice.<br>Every listener.</h1>
-        <p class="lede">Create a room, share the invitation, then stream live English captions and translated audio from your microphone.</p>
+        <p class="eyebrow">Realtime interpretation</p>
+        <h1>Run a live multilingual event.</h1>
+        <p class="lede">Create an event, share the invite, then stream translated audio and captions from a microphone or browser tab.</p>
       </section>
-
       <p id="error" class="error hidden" role="alert"></p>
 
       <section id="create-panel" class="grid">
         <article class="card two-thirds">
-          <h2>Create a room</h2>
-          <label for="create-glossary">Session glossary <span class="meta">(optional, one entry per line)</span></label>
-          <textarea id="create-glossary" placeholder="Sutera = Sutera&#10;Consiglio comunale = Town Council"></textarea>
-          <div class="controls">
-            <button id="create-room" type="button">Create host room</button>
+          <h2>Create event</h2>
+          <label for="event-title">Event title</label>
+          <input id="event-title" maxlength="120" placeholder="Master Zon Live">
+          <div class="two-col">
+            <label>Source language<select id="source-language"><option value="it">Italiano</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option></select></label>
+            <label>Target language<select id="target-language"><option value="en">English</option></select></label>
           </div>
+          <label for="scheduled-at">Date/time <span class="meta">optional</span></label>
+          <input id="scheduled-at" type="datetime-local">
+          <label for="audience-pin">Audience PIN <span class="meta">optional, 4-8 digits</span></label>
+          <input id="audience-pin" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="1234">
+          <label for="create-glossary">Glossary <span class="meta">one entry per line</span></label>
+          <textarea id="create-glossary" placeholder="ACoS = ACoS&#10;Seller Central = Seller Central"></textarea>
+          <button id="create-room" type="button">Create event</button>
         </article>
         <aside class="card third">
-          <h2>How it works</h2>
-          <p class="meta">The microphone is sent to this server. Only one server-side OpenAI Realtime session is used, regardless of listener count.</p>
+          <h2>Audio source</h2>
+          <label><input type="radio" name="source" value="microphone" checked> Microphone</label>
+          <label><input type="radio" name="source" value="display"> Browser tab / system audio</label>
+          <p class="meta">Tab/system audio availability depends on the browser and OS. Lingua Live will show an explicit error if capture is unavailable.</p>
         </aside>
       </section>
 
       <section id="room-panel" class="grid hidden" aria-live="polite">
         <article class="card half">
-          <span id="room-status" class="status-pill" data-state="created">Created</span>
-          <p class="meta">Room code</p>
+          <span id="room-status" class="status-pill">Created</span>
+          <p class="meta" id="event-summary"></p>
           <h2 id="room-code" class="room-code"></h2>
           <p><a id="invite-link" class="invite" href="#"></a></p>
-          <div class="controls">
-            <button id="copy-link" class="secondary" type="button">Copy invite link</button>
-          </div>
-          <img id="qr-code" class="qr" alt="QR code for the audience invite">
+          <div class="controls"><button id="copy-link" class="secondary">Copy invite</button><a id="download-transcript" class="button-link" href="#">Download CSV</a></div>
+          <img id="qr-code" class="qr" alt="Audience QR code">
         </article>
 
         <article class="card half">
           <h2>Live control</h2>
-          <p><strong id="listener-count">0</strong> audience listeners connected</p>
+          <p><strong id="listener-count">0</strong> listeners</p>
           <p id="service-status" class="notice">Ready to start.</p>
-          <div class="controls">
-            <button id="start-room" type="button">Start interpretation</button>
-            <button id="end-room" class="danger" type="button">End room</button>
-          </div>
+          <div class="controls"><button id="start-room">Start interpretation</button><button id="end-room" class="danger">End event</button></div>
+        </article>
+
+        <article class="card half transcript-card">
+          <h2>Original</h2>
+          <div id="source-transcript" class="transcript-pane"><p class="meta">Source transcript will appear here.</p></div>
+        </article>
+        <article class="card half transcript-card">
+          <h2>Translation</h2>
+          <div id="translated-transcript" class="transcript-pane"><p class="meta">Translated transcript will appear here.</p></div>
         </article>
 
         <article class="card two-thirds">
           <h2>Glossary</h2>
-          <label for="room-glossary">One preferred term or translation per line</label>
           <textarea id="room-glossary"></textarea>
-          <button id="save-glossary" class="secondary" type="button">Save glossary</button>
+          <button id="save-glossary" class="secondary">Update terminology</button>
         </article>
       </section>
     </main>

@@ -1,12 +1,29 @@
 # Lingua Live
 
-Lingua Live hosts one-way, live Italian → English interpretation rooms. A Host publishes microphone audio; any number of Audience browsers receive translated English captions and PCM audio over a room-scoped WebSocket.
+Lingua Live is a clean-room realtime interpretation platform inspired by publicly documented professional interpretation workflows. A Host creates an event and streams source audio; Audience browsers receive translated captions and synthesized translated audio from a single server-owned OpenAI Realtime session per room.
+
+## Current feature set
+
+- Host and Audience interfaces
+- Event title, schedule, source/target language metadata
+- Italian → English fully configured default, with language-pair architecture ready for additional supported pairs
+- Microphone or browser-tab/system audio capture where the browser supports `getDisplayMedia`
+- Live source transcript plus translated transcript in the Host console
+- Live translated captions and PCM audio for Audience listeners
+- Optional 4-8 digit audience PIN with short-lived admission tokens
+- Invite link and QR code
+- Listener presence, reconnect/backoff, bounded audio backpressure, cleanup lifecycle
+- Live glossary updates
+- Transcript export as timestamped CSV
+- Storage abstraction with in-memory development adapter
+- Security headers, body limits, public API rate limiting and secret isolation
+- Automated lifecycle/fan-out/auth/PIN/transcript tests and GitHub Actions CI
 
 ## Requirements
 
-- Node.js 20 or newer
-- An OpenAI API key with access to the Realtime API
-- HTTPS in production (browsers require a secure context for microphone access)
+- Node.js 20+
+- An OpenAI API key with Realtime API access
+- HTTPS/WSS in production for microphone/display-capture APIs
 
 ## Local setup
 
@@ -15,74 +32,79 @@ npm install
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env`, then run:
+Set `OPENAI_API_KEY` in `.env`, then:
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000/host](http://localhost:3000/host). Room creation and the UI still work without a key; starting interpretation returns a structured configuration error.
+Open `http://localhost:3000/host`.
 
 Optional environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
-| `PUBLIC_BASE_URL` | Request origin | Canonical origin used for invite URLs and QR codes |
+| `PUBLIC_BASE_URL` | Request origin | Public origin used for invite URLs and QR codes |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime model alias |
-| `HOST_RECONNECT_GRACE_MS` | `30000` | Time to retain the upstream session while a host reconnects |
-| `ROOM_RETENTION_MS` | `3600000` | Time to retain ended room metadata in memory |
+| `HOST_RECONNECT_GRACE_MS` | `30000` | Keep upstream translation alive during short host reconnects |
+| `ROOM_RETENTION_MS` | `3600000` | Retain ended room metadata before pruning |
 
-Never put `OPENAI_API_KEY` in browser code, a query string, or a public deployment setting. It is read only by the Node server and used on its server-to-server Realtime WebSocket.
+Never expose `OPENAI_API_KEY` to browser code, query strings, logs, or public environment variables. The standard API key is only used server-to-server.
 
-## Use
+## Host flow
 
-1. Open `/host`, optionally enter glossary terms, and select **Create host room**.
-2. Share the invite URL or QR code. Audience members can join before the room starts and wait at `/audience/:code`.
-3. Select **Start interpretation** and allow microphone access.
-4. Each audience member selects **Enable translated audio** once. This user gesture is required by browser autoplay policies; captions do not require it.
-5. Select **End room** when finished. The upstream session and every room socket close cleanly.
+1. Open `/host`.
+2. Enter event title, optional schedule, language pair, optional audience PIN, glossary, and choose microphone or tab/system audio.
+3. Create the event and share the invite link/QR code.
+4. Start interpretation and grant the requested browser permission.
+5. Monitor source transcript, translation, listener count and service state.
+6. Update glossary terms during the event if needed.
+7. Download the timestamped CSV transcript.
+8. End the event to release the upstream session and listener sockets.
 
-The Host tab keeps its separate host credential in `sessionStorage`, so refreshing the same tab can restore control. A room code alone grants audience access only.
+## Audience flow
 
-## Manual multi-browser test
+1. Open `/audience/:code` from the host invite.
+2. If the event is protected, enter the audience PIN.
+3. Enable translated audio once to satisfy browser autoplay policies.
+4. Read live translated captions, control volume and reconnect automatically if the network drops.
 
-1. Start the server and open `/host` in browser A.
-2. Create a room and open its invite URL in browser B (or an incognito window).
-3. Open the same invite in browser C. Verify the host shows two listeners.
-4. Enable translated audio in B and C, then start interpretation in A.
-5. Speak Italian. Verify both audience windows receive incremental English captions and translated audio.
-6. Refresh B. Verify its listener count does not duplicate and completed captions are restored.
-7. Briefly refresh A. Verify the live session survives during the reconnect grace period. Leave A disconnected beyond the grace period and verify the room pauses and releases the upstream connection; reconnect and select Start to resume.
-8. End the room in A. Verify B and C display the ended state and stop reconnecting.
+## Browser audio notes
 
-## Tests
+Microphone capture uses `getUserMedia`. Browser-tab/system audio uses the documented `getDisplayMedia` API and depends on browser/OS support. Some browsers expose screen sharing without an audio track; Lingua Live reports that explicitly instead of silently continuing.
+
+## Transcripts
+
+Source text comes only from official Realtime input-audio transcription events. Lingua Live never fabricates source text. Translation comes from Realtime output-audio transcript events. Export preserves blank source/translation cells when one side has not arrived yet.
+
+## Tests and CI
 
 ```bash
 npm test
+npm audit --audit-level=high
 ```
 
-The test suite covers the create/start/update/end lifecycle, host authorization, missing-key errors, secret non-disclosure, multi-listener caption/audio fan-out, audience write denial, stable reconnect identity, transcript replay, host reconnect grace, and upstream resource cleanup. The OpenAI network is replaced by a deterministic fake in tests; no API key or billable request is used.
+GitHub Actions runs installation, tests, dependency audit and JavaScript syntax checks on pull requests and `main`.
 
-## Routes and protocol
+## Important routes
 
-- `GET /host` — Host UI
-- `GET /audience/:code` — Audience UI
-- `POST /api/rooms` — Create a room and return its one-time host credential
-- `GET /api/rooms/:code` — Public, safe room status
-- `PATCH /api/rooms/:code` — Host-only glossary update
-- `POST /api/rooms/:code/start` — Host-only interpretation start/resume
-- `POST /api/rooms/:code/end` — Host-only room shutdown
-- `GET /api/rooms/:code/qr` — Invite QR image
-- `GET /health` — Health check
-- `GET /ws?...` — Host or audience WebSocket
+- `GET /host`
+- `GET /audience/:code`
+- `POST /api/rooms`
+- `GET /api/rooms/:code`
+- `POST /api/rooms/:code/admit`
+- `PATCH /api/rooms/:code`
+- `POST /api/rooms/:code/start`
+- `POST /api/rooms/:code/end`
+- `GET /api/rooms/:code/transcript`
+- `GET /api/rooms/:code/transcript.csv`
+- `GET /api/rooms/:code/qr`
+- `GET /health`
+- `GET /ws?...`
 
-API failures use `{ "error": { "code", "message", "retriable" } }`. WebSocket status, protocol, and error messages are similarly typed. Browser reconnect uses exponential backoff with jitter; the OpenAI connection uses bounded exponential backoff.
+## Production architecture
 
-See [docs/architecture.md](docs/architecture.md) for transport, scaling, reconnect, and security tradeoffs.
+The live room registry remains in memory for a simple single-process deployment. Event/transcript persistence is behind an async storage contract (`src/storage.js`) so a database adapter can replace the in-memory adapter without changing the room protocol. For horizontal scale, move room presence/leases to Redis or equivalent, publish caption/audio events through shared pub/sub, and move large-audience audio to an Opus/WebRTC or low-latency streaming tier.
 
-## Production notes
-
-This milestone intentionally uses an in-memory room registry for simple local startup and a single Node process. Use sticky routing for a single replicated deployment. Before running multiple independent server instances, replace the registry/publisher boundary with shared presence and pub/sub as described in the architecture document.
-
-Terminate TLS at the app or proxy, forward WebSocket upgrades, set `PUBLIC_BASE_URL` to the public HTTPS origin, and provide `OPENAI_API_KEY` through the host's secret manager. Do not persist host tokens in logs. The current host token is SHA-256 hashed in memory and compared in constant time.
+See `docs/architecture.md` and `docs/roadmap.md` for scaling, security and future integrations.
