@@ -23,5 +23,9 @@ jobs:
           node --check src/openai-realtime.js
           node --check src/room-store.js
           node --check src/storage.js
+          node --check src/integrations.js
           node --check public/host.js
           node --check public/audience.js
+          node --check public/captions.js
+          node --check public/embed.js
+          node --check scripts/load-smoke.mjs
