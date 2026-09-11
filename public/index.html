@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lingua Live — Interpretazione simultanea AI</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon">🎙️</span><strong>Lingua</strong><span>Live</span><span class="live-dot"></span></div>
+    <nav class="actions">
+      <button id="inviteBtn" class="ghost">👥 Invita ospiti</button>
+      <button id="voiceBtn" class="ghost">🔊 Voce: ON</button>
+      <button id="captionsBtn" class="ghost">💬 Sottotitoli</button>
+      <button id="exportBtn" class="ghost">📄 Esporta</button>
+      <button id="settingsBtn" class="ghost">⚙️ Impostazioni</button>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">AI REALTIME INTERPRETING</div>
+      <h1>Traduzione simultanea in inglese madrelingua</h1>
+      <p>Parla in italiano durante live, webinar, riunioni e call: Lingua Live ascolta, traduce e riproduce l'inglese in tempo reale, con trascrizione e sottotitoli live.</p>
+    </section>
+
+    <section class="controls-grid">
+      <div class="control-card">
+        <label>LINGUA SORGENTE</label>
+        <select id="sourceLanguage" disabled><option value="it">🇮🇹 Italiano</option></select>
+      </div>
+      <div class="control-card">
+        <label>INGLESE DI DESTINAZIONE</label>
+        <div class="segmented">
+          <button class="segment active" data-accent="us">🇺🇸 Americano</button>
+          <button class="segment" data-accent="uk">🇬🇧 Britannico</button>
+        </div>
+        <small>Preferenza salvata per il futuro layer TTS dedicato.</small>
+      </div>
+      <div class="control-card">
+        <label>SORGENTE AUDIO</label>
+        <div class="segmented">
+          <button id="micMode" class="segment active">🎤 Microfono</button>
+          <button id="tabMode" class="segment">🖥️ Scheda browser</button>
+        </div>
+      </div>
+      <div class="control-card">
+        <label>MOTORE TRADUZIONE</label>
+        <select id="engine"><option>OpenAI Realtime Translate</option></select>
+      </div>
+    </section>
+
+    <section class="statusbar">
+      <div class="status-left">
+        <span id="statusDot" class="dot"></span><span id="statusText">Pronto</span>
+        <span>•</span><span>Latenza: <b id="latency">—</b></span>
+        <span>•</span><span>Motore: <b>GPT Realtime Translate</b></span>
+        <span>•</span><span>Stanza: <b id="roomCode">------</b></span>
+      </div>
+      <button id="startBtn" class="primary">▶ Avvia interpretazione</button>
+    </section>
+
+    <section class="transcript-grid">
+      <article class="panel">
+        <div class="panel-head"><strong>AUDIO ORIGINALE</strong><span>🇮🇹</span></div>
+        <div id="sourceTranscript" class="transcript placeholder">Il parlato riconosciuto apparirà qui…</div>
+      </article>
+      <article class="panel">
+        <div class="panel-head"><strong>TRADUZIONE INGLESE</strong><span>🇺🇸</span></div>
+        <div id="targetTranscript" class="transcript placeholder">La traduzione apparirà e verrà letta qui…</div>
+      </article>
+    </section>
+
+    <section class="caption-stage" id="captionStage" hidden>
+      <div class="caption-label">LIVE SUBTITLES</div>
+      <div id="captionText">Waiting for speech…</div>
+    </section>
+
+    <audio id="translatedAudio" autoplay></audio>
+  </main>
+
+  <dialog id="settingsDialog">
+    <form method="dialog" class="modal">
+      <h2>Impostazioni audio</h2>
+      <label><input type="checkbox" id="duckOriginal" checked /> Riduci l'audio originale quando arriva la traduzione</label>
+      <label><input type="checkbox" id="noiseReduction" checked /> Riduzione rumore</label>
+      <label>Volume traduzione <input id="volume" type="range" min="0" max="1" step="0.05" value="1" /></label>
+      <div class="modal-actions"><button value="cancel">Chiudi</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
