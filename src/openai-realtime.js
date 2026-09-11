@@ -166,7 +166,7 @@ class BaseRealtimeSession {
       this.reconnectAttempt = 0;
       socket.send(JSON.stringify(this.sessionUpdateEvent()));
       for (const audio of this.audioQueue.splice(0)) this.sendAudio(audio);
-      this.onStatus?.({ state: "connected", message: "Interpretation service connected." });
+      this.onStatus?.({ state: "connected", message: this.connectedMessage(), ...this.capabilities() });
       if (!this.initialSettled) {
         this.initialSettled = true;
         clearTimeout(this.initialTimer);
@@ -204,6 +204,7 @@ class BaseRealtimeSession {
       message: "Interpretation service disconnected; reconnecting.",
       attempt: this.reconnectAttempt,
       retryInMs: delayMs,
+      ...this.capabilities(),
     });
     if (!this.initialSettled && closeCode === 1008) {
       this.initialSettled = true;
@@ -254,6 +255,24 @@ export class OpenAITranslationSession extends BaseRealtimeSession {
     super({ ...options, model: options.model || DEFAULT_TRANSLATION_MODEL });
   }
 
+  capabilities() {
+    return {
+      engineMode: "translate",
+      engineModel: this.model,
+      purposeBuiltTranslation: true,
+      continuous: true,
+      autoDetectSourceLanguage: true,
+      glossaryPromptSupported: false,
+      voiceSelectionSupported: false,
+    };
+  }
+
+  connectedMessage() {
+    return this.glossary.length
+      ? "Dedicated Realtime Translation connected. Custom glossary prompting is not supported in this mode; stored glossary terms are not injected into the model."
+      : "Dedicated Realtime Translation connected.";
+  }
+
   connectionUrl() {
     return `wss://api.openai.com/v1/realtime/translations?model=${encodeURIComponent(this.model)}`;
   }
@@ -273,7 +292,7 @@ export class OpenAITranslationSession extends BaseRealtimeSession {
       message: glossary.length
         ? "Dedicated Realtime Translation does not support custom glossary prompts; glossary terms are stored but not injected into this model."
         : "Dedicated Realtime Translation mode active.",
-      glossaryPromptSupported: false,
+      ...this.capabilities(),
     });
   }
 
@@ -349,6 +368,22 @@ export class OpenAITranslationSession extends BaseRealtimeSession {
 export class OpenAIPromptedRealtimeSession extends BaseRealtimeSession {
   constructor(options) {
     super({ ...options, model: options.model || DEFAULT_PROMPTED_MODEL });
+  }
+
+  capabilities() {
+    return {
+      engineMode: "prompted",
+      engineModel: this.model,
+      purposeBuiltTranslation: false,
+      continuous: false,
+      autoDetectSourceLanguage: false,
+      glossaryPromptSupported: true,
+      voiceSelectionSupported: true,
+    };
+  }
+
+  connectedMessage() {
+    return "Prompted Realtime compatibility mode connected. Custom glossary instructions are active.";
   }
 
   connectionUrl() {
@@ -430,6 +465,12 @@ function normalizeMode(value) {
   return mode;
 }
 
+function configuredTranslationModel(config = {}) {
+  const candidate = config.translationModel ?? process.env.OPENAI_REALTIME_MODEL;
+  if (!candidate || candidate === "gpt-realtime" || !String(candidate).includes("translate")) return DEFAULT_TRANSLATION_MODEL;
+  return String(candidate);
+}
+
 export function translationEngineCapabilities(config = {}) {
   const mode = normalizeMode(config.mode ?? process.env.OPENAI_TRANSLATION_MODE ?? "translate");
   if (mode === "prompted") {
@@ -445,7 +486,7 @@ export function translationEngineCapabilities(config = {}) {
   }
   return {
     mode,
-    model: config.translationModel ?? process.env.OPENAI_REALTIME_MODEL ?? DEFAULT_TRANSLATION_MODEL,
+    model: configuredTranslationModel(config),
     purposeBuiltTranslation: true,
     continuous: true,
     autoDetectSourceLanguage: true,
