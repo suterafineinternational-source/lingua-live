@@ -4,22 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Lingua Live Player</title>
-  <style>
-    html,body,iframe{margin:0;width:100%;height:100%;border:0;background:#fff}body{min-height:100vh}#error{font:16px system-ui;padding:24px;color:#7c1f1a}
-  </style>
+  <link rel="stylesheet" href="/embed.css">
 </head>
 <body>
   <div id="error" hidden></div>
   <iframe id="player" title="Lingua Live audience player" allow="autoplay"></iframe>
-  <script>
-    const code = new URLSearchParams(location.search).get('room')?.trim().toUpperCase();
-    const error = document.querySelector('#error');
-    const player = document.querySelector('#player');
-    if (!code || !/^[A-Z2-9]{6}$/.test(code)) {
-      player.hidden = true; error.hidden = false; error.textContent = 'Add ?room=ROOMCODE to the embed URL.';
-    } else {
-      player.src = `/audience/${encodeURIComponent(code)}`;
-    }
-  </script>
+  <script type="module" src="/embed.js"></script>
 </body>
 </html>

@@ -43,6 +43,9 @@
           <label><input type="radio" name="source" value="microphone" checked> Microphone</label>
           <label><input type="radio" name="source" value="display"> Browser tab / system audio</label>
           <p class="meta">Tab/system audio availability depends on the browser and OS. Lingua Live will show an explicit error if capture is unavailable.</p>
+          <hr>
+          <label><input id="record-source" type="checkbox"> Record the source audio locally on this browser</label>
+          <p class="meta">Off by default. Enable only with the required participant consent. The recording stays in this browser until you download it.</p>
         </aside>
       </section>
 
@@ -52,7 +55,12 @@
           <p class="meta" id="event-summary"></p>
           <h2 id="room-code" class="room-code"></h2>
           <p><a id="invite-link" class="invite" href="#"></a></p>
-          <div class="controls"><button id="copy-link" class="secondary">Copy invite</button><a id="download-transcript" class="button-link" href="#">Download CSV</a></div>
+          <div class="controls">
+            <button id="copy-link" class="secondary">Copy invite</button>
+            <a id="download-transcript" class="button-link" href="#">Download CSV</a>
+            <button id="download-summary" class="secondary">Download summary</button>
+            <button id="download-recording" class="secondary hidden">Download recording</button>
+          </div>
           <img id="qr-code" class="qr" alt="Audience QR code">
         </article>
 
