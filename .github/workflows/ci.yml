@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --audit-level=high
+      - run: |
+          node --check server.js
+          node --check src/app.js
+          node --check src/openai-realtime.js
+          node --check src/room-store.js
+          node --check src/storage.js
+          node --check public/host.js
+          node --check public/audience.js
