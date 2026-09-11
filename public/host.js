@@ -9,6 +9,8 @@ let recorder, recordingChunks = [], recordingBlob;
 let reconnectAttempt = 0;
 let shouldConnect = false;
 let sourceCurrent = "", targetCurrent = "";
+let audioChunkCount = 0, nonSilentChunkCount = 0, lastPeak = 0;
+let engineStatus = "Host connected. Ready to start.";
 
 function glossaryFrom(textarea) { return textarea.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean); }
 function showError(error) { el.error.textContent = error?.message || "Something went wrong."; el.error.classList.remove("hidden"); }
@@ -16,6 +18,8 @@ function clearError() { el.error.classList.add("hidden"); el.error.textContent =
 function selectedSource() { return document.querySelector('input[name="source"]:checked')?.value || "microphone"; }
 function appendLine(container, text) {
   if (!text?.trim()) return;
+  const placeholder = container.querySelector(".meta");
+  if (placeholder) placeholder.remove();
   const p = document.createElement("p"); p.className = "transcript-line"; p.textContent = text.trim(); container.append(p);
   while (container.children.length > 80) container.firstElementChild.remove();
 }
@@ -23,6 +27,20 @@ function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function peakPercent(buffer) {
+  const pcm = new Int16Array(buffer);
+  let max = 0;
+  for (let i = 0; i < pcm.length; i += 1) max = Math.max(max, Math.abs(pcm[i]));
+  return Math.min(100, Math.round((max / 32768) * 100));
+}
+function renderLiveDiagnostic() {
+  if (!mediaStream) return setText(el.service_status, engineStatus);
+  if (!audioChunkCount) return setText(el.service_status, `${engineStatus} · Waiting for microphone samples…`);
+  if (lastPeak <= 1 && audioChunkCount > 10) {
+    return setText(el.service_status, `${engineStatus} · Microphone stream is connected, but the audio level is near zero (${lastPeak}%). Check the selected microphone.`);
+  }
+  setText(el.service_status, `${engineStatus} · Mic ${lastPeak}% · ${audioChunkCount} audio chunks sent · ${nonSilentChunkCount} with speech signal`);
 }
 
 function renderRoom(nextRoom) {
@@ -54,7 +72,12 @@ function connectSocket() {
   if (!room || !hostToken || room.status === "ended") return;
   clearTimeout(reconnectTimer); shouldConnect = true;
   socket = new WebSocket(webSocketUrl({ room: room.code, role: "host", clientId: clientId(`lingua-host-client-${room.code}`), token: hostToken }));
-  socket.addEventListener("open", () => { reconnectAttempt = 0; setText(el.service_status, room.status === "live" ? "Live source connected." : "Host connected. Ready to start."); socket.send(JSON.stringify({ type: "client.ready" })); });
+  socket.addEventListener("open", () => {
+    reconnectAttempt = 0;
+    engineStatus = room.status === "live" ? "Host relay connected" : "Host connected. Ready to start.";
+    renderLiveDiagnostic();
+    socket.send(JSON.stringify({ type: "client.ready" }));
+  });
   socket.addEventListener("message", ({ data }) => {
     const event = JSON.parse(data);
     if (event.type === "session.ready") {
@@ -63,19 +86,40 @@ function connectSocket() {
     }
     if (event.type === "room.status") renderRoom(event.room);
     if (event.type === "presence") setText(el.listener_count, String(event.listenerCount));
-    if (event.type === "service.status") setText(el.service_status, event.message);
-    if (event.type === "client.error" || event.type === "service.error") showError(event.error);
+    if (event.type === "service.status") { engineStatus = event.message || "Interpretation service connected"; renderLiveDiagnostic(); }
+    if (event.type === "client.error" || event.type === "service.error") { showError(event.error); engineStatus = event.error?.message || "Interpretation error"; renderLiveDiagnostic(); }
     if (event.type === "room.ended") renderRoom(event.room);
-    if (event.type === "source_transcript.delta") { sourceCurrent += event.delta || ""; setText(el.service_status, `Hearing: ${sourceCurrent.slice(-80)}`); }
-    if (event.type === "source_transcript.done") { appendLine(el.source_transcript, event.transcript || sourceCurrent); sourceCurrent = ""; }
-    if (event.type === "transcript.delta") { targetCurrent += event.delta || ""; }
-    if (event.type === "transcript.done") { appendLine(el.translated_transcript, event.transcript || targetCurrent); targetCurrent = ""; }
+    if (event.type === "speaker.status" && event.speaking) { engineStatus = "Translation engine detects speech"; renderLiveDiagnostic(); }
+    if (event.type === "source_transcript.delta") {
+      sourceCurrent += event.delta || "";
+      setText(el.service_status, `HEARD: ${sourceCurrent.slice(-120)}`);
+    }
+    if (event.type === "source_transcript.done") {
+      appendLine(el.source_transcript, event.transcript || sourceCurrent);
+      sourceCurrent = "";
+      engineStatus = "Source speech transcribed";
+      renderLiveDiagnostic();
+    }
+    if (event.type === "transcript.delta") {
+      targetCurrent += event.delta || "";
+      if (targetCurrent) setText(el.service_status, `TRANSLATING: ${targetCurrent.slice(-120)}`);
+    }
+    if (event.type === "transcript.done") {
+      appendLine(el.translated_transcript, event.transcript || targetCurrent);
+      targetCurrent = "";
+      engineStatus = "Translation received";
+      renderLiveDiagnostic();
+    }
   });
   socket.addEventListener("close", (event) => {
     if (!shouldConnect || room?.status === "ended" || event.code === 4001) return;
-    stopCapture(); const delay = reconnectDelay(reconnectAttempt++); setText(el.service_status, `Connection lost. Reconnecting in ${Math.ceil(delay/1000)}s…`); reconnectTimer = setTimeout(connectSocket, delay);
+    stopCapture();
+    const delay = reconnectDelay(reconnectAttempt++);
+    engineStatus = `Host relay disconnected. Reconnecting in ${Math.ceil(delay/1000)}s…`;
+    renderLiveDiagnostic();
+    reconnectTimer = setTimeout(connectSocket, delay);
   });
-  socket.addEventListener("error", () => setText(el.service_status, "Host connection interrupted."));
+  socket.addEventListener("error", () => { engineStatus = "Host relay connection interrupted"; renderLiveDiagnostic(); });
 }
 
 function bytesToBase64(buffer) {
@@ -96,7 +140,6 @@ function beginRecording() {
       if (!recordingChunks.length) return;
       recordingBlob = new Blob(recordingChunks, { type: recorder.mimeType || "audio/webm" });
       el.download_recording.classList.remove("hidden");
-      setText(el.service_status, "Event stopped. Local source recording is ready to download.");
     });
     recorder.start(1000);
   } catch (error) {
@@ -119,12 +162,25 @@ async function startCapture() {
     if (error?.name === "NotAllowedError") throw new Error("Audio permission was denied. Allow microphone/screen audio access and try again.");
     throw error;
   }
+  audioChunkCount = 0; nonSilentChunkCount = 0; lastPeak = 0;
   beginRecording();
   audioContext = new AudioContext();
-  await audioContext.audioWorklet.addModule("/pcm-worklet.js"); await audioContext.resume();
-  const source = audioContext.createMediaStreamSource(mediaStream); captureNode = new AudioWorkletNode(audioContext, "pcm-capture");
-  const silent = audioContext.createGain(); silent.gain.value = 0; source.connect(captureNode).connect(silent).connect(audioContext.destination);
-  captureNode.port.onmessage = ({ data }) => { if (socket?.readyState === WebSocket.OPEN && room?.status === "live") socket.send(JSON.stringify({ type: "audio.append", audio: bytesToBase64(data) })); };
+  await audioContext.audioWorklet.addModule("/pcm-worklet.js");
+  await audioContext.resume();
+  const source = audioContext.createMediaStreamSource(mediaStream);
+  captureNode = new AudioWorkletNode(audioContext, "pcm-capture");
+  const silent = audioContext.createGain(); silent.gain.value = 0;
+  source.connect(captureNode).connect(silent).connect(audioContext.destination);
+  captureNode.port.onmessage = ({ data }) => {
+    audioChunkCount += 1;
+    lastPeak = peakPercent(data);
+    if (lastPeak > 2) nonSilentChunkCount += 1;
+    if (socket?.readyState === WebSocket.OPEN && room?.status === "live") {
+      socket.send(JSON.stringify({ type: "audio.append", audio: bytesToBase64(data) }));
+    }
+    if (audioChunkCount === 1 || audioChunkCount % 5 === 0) renderLiveDiagnostic();
+  };
+  renderLiveDiagnostic();
 }
 
 function stopCapture() {
@@ -152,11 +208,26 @@ el.create_room.addEventListener("click", async () => {
 });
 
 el.start_room.addEventListener("click", async () => {
-  clearError(); el.start_room.disabled = true; setText(el.service_status, "Connecting interpretation service…");
+  clearError();
+  el.start_room.disabled = true;
+  engineStatus = "Requesting microphone…";
+  renderLiveDiagnostic();
   try {
+    // Capture first while the Start click still counts as a direct browser user gesture.
+    await startCapture();
+    engineStatus = "Connecting translation engine…";
+    renderLiveDiagnostic();
     const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } });
-    renderRoom(payload.room); await startCapture(); setText(el.service_status, selectedSource() === "display" ? "Live tab/system audio connected." : "Live microphone connected.");
-  } catch (error) { showError(error); setText(el.service_status, "Ready to start when audio and interpretation are available."); el.start_room.disabled = false; stopCapture(); }
+    renderRoom(payload.room);
+    engineStatus = "Translation engine connected; listening for speech";
+    renderLiveDiagnostic();
+  } catch (error) {
+    showError(error);
+    engineStatus = error?.message || "Could not start interpretation";
+    renderLiveDiagnostic();
+    el.start_room.disabled = false;
+    stopCapture();
+  }
 });
 
 el.end_room.addEventListener("click", async () => {
@@ -167,11 +238,11 @@ el.end_room.addEventListener("click", async () => {
 
 el.save_glossary.addEventListener("click", async () => {
   clearError();
-  try { const payload = await api(`/api/rooms/${room.code}`, { method: "PATCH", headers: { Authorization: `Bearer ${hostToken}` }, body: JSON.stringify({ glossary: glossaryFrom(el.room_glossary) }) }); renderRoom(payload.room); setText(el.service_status, "Glossary updated live."); }
+  try { const payload = await api(`/api/rooms/${room.code}`, { method: "PATCH", headers: { Authorization: `Bearer ${hostToken}` }, body: JSON.stringify({ glossary: glossaryFrom(el.room_glossary) }) }); renderRoom(payload.room); engineStatus = "Glossary updated"; renderLiveDiagnostic(); }
   catch (error) { showError(error); }
 });
 
-el.copy_link.addEventListener("click", async () => { try { await navigator.clipboard.writeText(el.invite_link.href); setText(el.service_status, "Invite copied."); } catch { showError(new Error("Could not copy automatically. Select the invite link instead.")); } });
+el.copy_link.addEventListener("click", async () => { try { await navigator.clipboard.writeText(el.invite_link.href); engineStatus = "Invite copied"; renderLiveDiagnostic(); } catch { showError(new Error("Could not copy automatically. Select the invite link instead.")); } });
 
 el.download_transcript.addEventListener("click", async (event) => {
   event.preventDefault();
