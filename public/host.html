@@ -6,6 +6,7 @@
     <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
     <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/quality.css?v=20260911-1">
   </head>
   <body>
     <main class="shell">
@@ -88,7 +89,27 @@
           </div>
           <p id="monitor-status" class="notice">English monitor OFF.</p>
           <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
-          <p class="meta">The monitor now reports translated audio chunks received and actually scheduled for playback, so you can verify the English stream from the Host console.</p>
+          <p class="meta">The monitor reports translated audio chunks received and actually scheduled for playback, so you can verify the English stream from the Host console.</p>
+        </article>
+
+        <article class="card two-thirds quality-card">
+          <div class="quality-heading">
+            <div>
+              <p class="eyebrow">Realtime Quality Monitor</p>
+              <h2>Fast-speech stress test</h2>
+            </div>
+            <span id="quality-health" class="quality-health" data-state="warming-up">WARMING UP</span>
+          </div>
+          <div class="quality-grid">
+            <div class="quality-metric"><span>Speaking speed</span><strong id="quality-wpm">—</strong><small id="quality-pace">Waiting for speech</small></div>
+            <div class="quality-metric"><span>Translation onset lag</span><strong id="quality-lag">—</strong><small id="quality-lag-max">latest — · max —</small></div>
+            <div class="quality-metric"><span>English audio buffer</span><strong id="quality-buffer">0.00 s</strong><small>Growth means playback is falling behind</small></div>
+            <div class="quality-metric"><span>Input relay</span><strong id="quality-input">0 sent · 0 missed</strong><small>Captured audio compared with WebSocket delivery</small></div>
+          </div>
+          <p id="quality-output" class="meta">0 English audio chunks · 0 pending segments</p>
+          <p id="quality-verdict" class="quality-verdict">Start interpretation to measure realtime performance.</p>
+          <div class="controls"><button id="quality-reset" class="secondary" type="button">Reset quality test</button></div>
+          <p class="meta">Technical monitor: it measures speech pace, realtime translation lag, audio backlog and relay loss. It does not automatically judge whether every English sentence sounds native; use “Monitor English audio” for that listening check.</p>
         </article>
 
         <article class="card half transcript-card">
@@ -118,6 +139,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host.js?v=20260911-2"></script>
+    <script type="module" src="/host-entry.js?v=20260911-1"></script>
   </body>
 </html>

@@ -25,6 +25,9 @@ jobs:
           node --check src/storage.js
           node --check src/integrations.js
           node --check public/host.js
+          node --check public/host-entry.js
+          node --check public/quality-bootstrap.js
+          node --check public/quality-monitor.js
           node --check public/audience.js
           node --check public/captions.js
           node --check public/embed.js
