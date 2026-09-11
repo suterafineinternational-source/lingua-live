@@ -16,8 +16,8 @@
 
       <section class="hero">
         <p class="eyebrow">Realtime interpretation</p>
-        <h1>Run a live multilingual event.</h1>
-        <p class="lede">Create an event, share the invite, then stream translated audio and captions from a microphone or browser tab.</p>
+        <h1>Run a live multilingual webinar.</h1>
+        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive professional English audio, live captions and your shared webinar screen.</p>
       </section>
       <p id="error" class="error hidden" role="alert"></p>
 
@@ -36,17 +36,16 @@
           <input id="audience-pin" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="1234">
           <label for="create-glossary">Glossary <span class="meta">one entry per line</span></label>
           <textarea id="create-glossary" placeholder="ACoS = ACoS&#10;Seller Central = Seller Central"></textarea>
-          <p class="meta">Dedicated Realtime Translation is optimized for continuous low-latency interpretation but does not support custom prompts or glossaries. Glossary terms are applied only when the server is configured in prompted compatibility mode.</p>
           <button id="create-room" type="button">Create event</button>
         </article>
         <aside class="card third">
-          <h2>Audio source</h2>
+          <h2>Source</h2>
           <label><input type="radio" name="source" value="microphone" checked> Microphone</label>
-          <label><input type="radio" name="source" value="display"> Browser tab / system audio</label>
-          <p class="meta">Tab/system audio availability depends on the browser and OS. Lingua Live will show an explicit error if capture is unavailable.</p>
+          <label><input type="radio" name="source" value="display"> Zoom / Google Meet / browser tab</label>
+          <p class="meta">For Zoom or Google Meet, open the meeting in Chrome and choose the meeting tab with “Share tab audio” enabled when prompted.</p>
           <hr>
-          <label><input id="record-source" type="checkbox"> Record the source audio locally on this browser</label>
-          <p class="meta">Off by default. Enable only with the required participant consent. The recording stays in this browser until you download it.</p>
+          <label><input id="record-source" type="checkbox"> Record source audio locally</label>
+          <p class="meta">Off by default. Enable only with the required participant consent.</p>
         </aside>
       </section>
 
@@ -69,7 +68,13 @@
           <h2>Live control</h2>
           <p><strong id="listener-count">0</strong> listeners</p>
           <p id="service-status" class="notice">Ready to start.</p>
-          <div class="controls"><button id="start-room">Start interpretation</button><button id="end-room" class="danger">End event</button></div>
+          <div class="controls">
+            <button id="start-room">Start interpretation</button>
+            <button id="monitor-audio" class="secondary">Monitor English audio</button>
+            <button id="share-screen" class="secondary">Share screen to audience</button>
+            <button id="end-room" class="danger">End event</button>
+          </div>
+          <p class="meta">“Monitor English audio” lets you hear exactly what is being sent to guests. Listener status below confirms whether each guest enabled audio and is actually receiving translated chunks.</p>
         </article>
 
         <article class="card half transcript-card">
@@ -77,14 +82,24 @@
           <div id="source-transcript" class="transcript-pane"><p class="meta">Source transcript will appear here.</p></div>
         </article>
         <article class="card half transcript-card">
-          <h2>Translation</h2>
+          <h2>English translation</h2>
           <div id="translated-transcript" class="transcript-pane"><p class="meta">Translated transcript will appear here.</p></div>
+        </article>
+
+        <article class="card half">
+          <h2>Audience audio status</h2>
+          <div id="listener-statuses" class="transcript-pane"><p class="meta">Guest playback status will appear here.</p></div>
+        </article>
+
+        <article class="card half">
+          <h2>Shared webinar screen</h2>
+          <div class="screen-preview-wrap"><img id="host-screen-preview" class="screen-preview hidden" alt="Shared webinar preview"><p id="screen-share-status" class="meta">Not sharing yet.</p></div>
         </article>
 
         <article class="card two-thirds">
           <h2>Glossary</h2>
           <textarea id="room-glossary"></textarea>
-          <p class="meta">If the active engine is Dedicated Realtime Translation, changes are stored but cannot be injected as custom model instructions. The live status message identifies the engine behavior.</p>
+          <p class="meta">Terminology control is available in prompted professional-voice mode.</p>
           <button id="save-glossary" class="secondary">Update terminology</button>
         </article>
       </section>

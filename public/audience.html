@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Listen to a live interpretation with Lingua Live.">
+    <meta name="description" content="Watch and listen to a live interpreted webinar with Lingua Live.">
     <title>Audience · Lingua Live</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -17,6 +17,7 @@
       <section class="audience-header">
         <p class="eyebrow" id="event-title">Live interpretation</p>
         <h1 id="language-pair">Connecting…</h1>
+        <p class="lede">Watch the shared webinar screen, read live English captions, and listen to the translated English voice.</p>
       </section>
 
       <p id="error" class="error hidden" role="alert"></p>
@@ -26,16 +27,23 @@
         <div class="controls"><input id="audience-pin" inputmode="numeric" maxlength="8" placeholder="PIN"><button id="join-room">Join event</button></div>
       </section>
 
-      <section id="caption-stage" class="caption-stage" aria-label="Live translated captions" aria-live="polite">
-        <div id="caption-history" class="caption-history"></div>
-        <p id="caption-current" class="caption current">Waiting for the host to speak…</p>
+      <section class="webinar-stage">
+        <div class="webinar-screen-card">
+          <img id="shared-screen" class="shared-screen hidden" alt="Live webinar screen shared by host">
+          <div id="screen-placeholder" class="screen-placeholder">The host has not shared a screen yet.</div>
+        </div>
+        <section id="caption-stage" class="caption-stage" aria-label="Live translated captions" aria-live="polite">
+          <div id="caption-history" class="caption-history"></div>
+          <p id="caption-current" class="caption current">Waiting for the host to speak…</p>
+        </section>
       </section>
 
       <footer class="listener-bar">
         <div><span id="live-pulse" class="pulse"></span><strong id="connection-status">Connecting…</strong><span class="meta"> · <span id="listener-count">0</span> listening</span></div>
         <div class="audio-controls">
-          <button id="enable-audio" type="button">Enable translated audio</button>
+          <button id="enable-audio" type="button">Enable English audio</button>
           <label class="volume-label">Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
+          <span id="playback-status" class="meta">Audio is off</span>
         </div>
       </footer>
     </main>

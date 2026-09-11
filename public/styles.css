@@ -46,16 +46,26 @@ h1 { margin:0; font-size:clamp(2.2rem,7vw,4.8rem); line-height:.97; letter-spaci
 .audience-header { margin-bottom:1rem; }
 .audience-header h1 { font-size:clamp(2rem,5vw,3.4rem); }
 .pin-card { max-width:34rem; margin:1rem auto; width:100%; }
-.caption-stage { flex:1; display:flex; flex-direction:column; justify-content:flex-end; gap:1rem; padding:1rem 0 3rem; }
+.caption-stage { display:flex; flex-direction:column; justify-content:flex-end; gap:1rem; padding:1rem; min-height:16rem; border-radius:1.2rem; background:rgba(255,255,255,.88); }
 .caption-history { display:flex; flex-direction:column; gap:.8rem; opacity:.62; }
-.caption { max-width:55rem; margin:0; font-size:clamp(1.4rem,4vw,2.7rem); line-height:1.25; letter-spacing:-.025em; }
-.caption.current { font-size:clamp(2rem,6vw,4.5rem); font-weight:850; opacity:1; }
+.caption { max-width:55rem; margin:0; font-size:clamp(1.2rem,3vw,2.2rem); line-height:1.25; letter-spacing:-.025em; }
+.caption.current { font-size:clamp(1.7rem,4vw,3.2rem); font-weight:850; opacity:1; }
 .listener-bar { position:sticky; bottom:1rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; border:1px solid rgba(20,33,61,.1); border-radius:1rem; padding:.8rem; background:rgba(255,255,255,.94); backdrop-filter:blur(16px); }
 .audio-controls { display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }
 .volume-label { display:flex; align-items:center; gap:.5rem; font-size:.85rem; }
 .volume-label input { width:8rem; }
 .pulse { display:inline-block; width:.65rem; height:.65rem; margin-right:.4rem; border-radius:50%; background:#84908c; }
 .pulse.live { background:#17a36b; box-shadow:0 0 0 .35rem rgba(23,163,107,.15); }
-@media (min-width:48rem) { .card.half{grid-column:span 6}.card.third{grid-column:span 4}.card.two-thirds{grid-column:span 8}.card{padding:1.6rem} }
-@media (max-width:47.99rem) { .two-col{grid-template-columns:1fr}.listener-bar{align-items:flex-start;flex-direction:column}.audio-controls{width:100%}.audio-controls button{flex:1}.volume-label{width:100%}.volume-label input{flex:1} }
+.webinar-stage { display:grid; gap:1rem; flex:1; margin-bottom:1rem; }
+.webinar-screen-card { min-height:22rem; border-radius:1.2rem; background:#0f172a; display:grid; place-items:center; overflow:hidden; box-shadow:0 1rem 3rem rgba(15,23,42,.16); }
+.shared-screen, .screen-preview { display:block; width:100%; height:auto; object-fit:contain; background:#0f172a; }
+.screen-placeholder { color:#cbd5e1; padding:2rem; text-align:center; }
+.screen-preview-wrap { min-height:14rem; border-radius:.8rem; background:#0f172a; display:grid; place-items:center; overflow:hidden; }
+.screen-preview-wrap .meta { color:#d8e1e8; padding:1rem; text-align:center; }
+@media (min-width:48rem) {
+  .card.half{grid-column:span 6}.card.third{grid-column:span 4}.card.two-thirds{grid-column:span 8}.card{padding:1.6rem}
+  .webinar-stage { grid-template-columns:minmax(0,1.4fr) minmax(20rem,.6fr); align-items:stretch; }
+  .caption-stage { min-height:100%; }
+}
+@media (max-width:47.99rem) { .two-col{grid-template-columns:1fr}.listener-bar{align-items:flex-start;flex-direction:column}.audio-controls{width:100%}.audio-controls button{flex:1}.volume-label{width:100%}.volume-label input{flex:1}.webinar-screen-card{min-height:14rem} }
 @media (prefers-reduced-motion:no-preference) { button,.button-link{transition:transform 120ms ease,background 120ms ease} }
