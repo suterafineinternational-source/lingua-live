@@ -39,10 +39,9 @@
           <button id="create-room" type="button">Create event</button>
         </article>
         <aside class="card third">
-          <h2>How you will speak</h2>
-          <p class="meta">You can choose the actual audio source again after creating the room, before you press Start.</p>
-          <label><input type="radio" name="source" value="microphone" checked> Microphone</label>
-          <label><input type="radio" name="source" value="display"> Zoom / Google Meet / browser tab</label>
+          <h2>Audio source</h2>
+          <p>You will choose <strong>Microphone</strong> or <strong>Zoom / Google Meet / Browser Tab</strong> in the Live control panel immediately after creating the event.</p>
+          <p class="meta">The browser-tab mode uses Chrome's screen/tab picker and requires “Share tab audio” for Zoom/Meet audio.</p>
           <hr>
           <label><input id="record-source" type="checkbox"> Record source audio locally</label>
           <p class="meta">Off by default. Enable only with the required participant consent.</p>
@@ -71,11 +70,11 @@
           <div class="live-source-panel" aria-label="Choose live audio source">
             <p class="live-source-title">1. Choose live audio source</p>
             <label class="source-choice">
-              <input type="radio" name="live-source" value="microphone" checked>
+              <input type="radio" name="source" value="microphone" checked>
               <span><strong>Microphone</strong><small>Use your Mac/PC microphone while you speak.</small></span>
             </label>
             <label class="source-choice">
-              <input type="radio" name="live-source" value="display">
+              <input type="radio" name="source" value="display">
               <span><strong>Zoom / Google Meet / Browser Tab</strong><small>Choose the meeting tab and enable “Share tab audio” in Chrome.</small></span>
             </label>
           </div>
