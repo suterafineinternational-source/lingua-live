@@ -1,7 +1,7 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
 
 const el = Object.fromEntries([
-  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","share-screen","listener-statuses","host-screen-preview","screen-share-status"
+  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","monitor-status","share-screen","listener-statuses","host-screen-preview","screen-share-status"
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 let room, hostToken, socket, reconnectTimer, mediaStream, audioContext, captureNode;
@@ -12,43 +12,89 @@ let sourceCurrent = "", targetCurrent = "";
 let audioChunkCount = 0, nonSilentChunkCount = 0, lastPeak = 0;
 let engineStatus = "Host connected. Ready to start.";
 let screenStream, screenVideo, screenCanvas, screenTimer;
+let screenFramesSent = 0;
 const listenerStatuses = new Map();
 
+function decodePcm16Le(base64, context) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const buffer = context.createBuffer(1, sampleCount, 24000);
+  const channel = buffer.getChannelData(0);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < sampleCount; i += 1) channel[i] = view.getInt16(i * 2, true) / 32768;
+  return buffer;
+}
+
 class PcmMonitor {
-  constructor() { this.context = null; this.gain = null; this.nextStart = 0; this.enabled = false; this.pending = []; }
+  constructor() {
+    this.context = null;
+    this.gain = null;
+    this.nextStart = 0;
+    this.enabled = false;
+    this.pending = [];
+    this.receivedChunks = 0;
+    this.scheduledChunks = 0;
+  }
+  status(text) { if (el.monitor_status) setText(el.monitor_status, text); }
   async enable() {
-    this.context ||= new AudioContext({ sampleRate: 24000 });
-    this.gain ||= this.context.createGain();
-    if (!this.gain.context) return;
-    this.gain.gain.value = 1;
-    if (!this.gain.numberOfOutputs) this.gain.connect(this.context.destination);
-    else {
-      try { this.gain.connect(this.context.destination); } catch {}
+    if (!window.AudioContext) throw new Error("Web Audio is not supported by this browser.");
+    this.context ||= new AudioContext();
+    if (!this.gain) {
+      this.gain = this.context.createGain();
+      this.gain.gain.value = 1;
+      this.gain.connect(this.context.destination);
     }
     await this.context.resume();
+    if (this.context.state !== "running") throw new Error("Browser audio output is still suspended. Click the button again and allow audio playback.");
     this.enabled = true;
-    for (const chunk of this.pending.splice(0)) this.play(chunk);
+    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.04);
+    const backlog = this.pending.splice(Math.max(0, this.pending.length - 10));
+    this.pending = [];
+    for (const chunk of backlog) this.play(chunk);
+    this.status(`English monitor ON · ${this.receivedChunks} translated chunks received · ${this.scheduledChunks} scheduled for playback`);
+  }
+  disable() {
+    this.enabled = false;
+    this.pending = [];
+    this.nextStart = this.context?.currentTime || 0;
+    this.status(`English monitor OFF · ${this.receivedChunks} translated chunks received this session`);
   }
   enqueue(base64) {
+    if (!base64) return;
+    this.receivedChunks += 1;
     if (!this.enabled || !this.context || this.context.state !== "running") {
       this.pending.push(base64);
-      if (this.pending.length > 30) this.pending.shift();
+      if (this.pending.length > 10) this.pending.shift();
+      this.status(`English translation audio available · ${this.receivedChunks} chunks received · click “Monitor English audio” to hear it`);
       return;
     }
     this.play(base64);
   }
   play(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    const pcm = new Int16Array(bytes.buffer);
-    const buffer = this.context.createBuffer(1, pcm.length, 24000);
-    const channel = buffer.getChannelData(0);
-    for (let i = 0; i < pcm.length; i += 1) channel[i] = pcm[i] / 32768;
-    const source = this.context.createBufferSource(); source.buffer = buffer; source.connect(this.gain);
-    const start = Math.max(this.context.currentTime + 0.02, this.nextStart); source.start(start); this.nextStart = start + buffer.duration;
+    try {
+      const buffer = decodePcm16Le(base64, this.context);
+      const source = this.context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.gain);
+      const start = Math.max(this.context.currentTime + 0.025, this.nextStart);
+      source.start(start);
+      this.nextStart = start + buffer.duration;
+      this.scheduledChunks += 1;
+      this.status(`English monitor ON · ${this.receivedChunks} chunks received · ${this.scheduledChunks} played/scheduled`);
+    } catch (error) {
+      this.status(`English monitor error: ${error.message}`);
+      showError(new Error(`Could not play translated English audio: ${error.message}`));
+    }
   }
-  reset() { this.pending = []; this.nextStart = this.context?.currentTime || 0; }
+  reset() {
+    this.pending = [];
+    this.nextStart = this.context?.currentTime || 0;
+    this.receivedChunks = 0;
+    this.scheduledChunks = 0;
+    this.status("English monitor OFF.");
+  }
 }
 const monitor = new PcmMonitor();
 
@@ -141,31 +187,69 @@ function beginRecording() {
   } catch (error) { recorder = null; showError(new Error(`Local recording could not start: ${error.message}`)); }
 }
 
+function encodedFrame(video, canvas) {
+  const attempts = [
+    { width: 900, quality: 0.5 },
+    { width: 760, quality: 0.44 },
+    { width: 640, quality: 0.38 },
+  ];
+  let image = "";
+  for (const attempt of attempts) {
+    const ratio = (video.videoHeight || 540) / (video.videoWidth || 960);
+    canvas.width = attempt.width;
+    canvas.height = Math.max(240, Math.round(attempt.width * ratio));
+    const ctx = canvas.getContext("2d", { alpha: false });
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    image = canvas.toDataURL("image/jpeg", attempt.quality);
+    if (image.length < 560000) break;
+  }
+  return image;
+}
+
 async function prepareScreenRelay(stream) {
-  if (!stream?.getVideoTracks().length) return;
+  if (!stream?.getVideoTracks().length) throw new Error("No video track is available to share.");
   stopScreenRelayOnly();
   screenStream = stream;
-  screenVideo = document.createElement("video"); screenVideo.muted = true; screenVideo.playsInline = true; screenVideo.srcObject = new MediaStream(stream.getVideoTracks()); await screenVideo.play();
+  screenFramesSent = 0;
+  screenVideo = document.createElement("video");
+  screenVideo.muted = true;
+  screenVideo.playsInline = true;
+  screenVideo.srcObject = new MediaStream(stream.getVideoTracks());
+  await screenVideo.play();
   screenCanvas = document.createElement("canvas");
+  el.share_screen.textContent = "Stop screen sharing";
+
   const sendFrame = () => {
-    if (!screenVideo || !socket || socket.readyState !== WebSocket.OPEN || !room || room.status !== "live") return;
-    const width = 960; const ratio = (screenVideo.videoHeight || 540) / (screenVideo.videoWidth || 960); screenCanvas.width = width; screenCanvas.height = Math.max(320, Math.round(width * ratio));
-    const ctx = screenCanvas.getContext("2d"); ctx.drawImage(screenVideo, 0, 0, screenCanvas.width, screenCanvas.height);
-    const image = screenCanvas.toDataURL("image/jpeg", 0.62); el.host_screen_preview.src = image; el.host_screen_preview.classList.remove("hidden"); setText(el.screen_share_status, "Sharing webinar screen live to audience.");
-    if (image.length < 640000) socket.send(JSON.stringify({ type: "screen.frame", image }));
+    if (!screenVideo || !screenCanvas) return;
+    if (screenVideo.readyState < 2) { setText(el.screen_share_status, "Screen selected · waiting for video frames…"); return; }
+    const image = encodedFrame(screenVideo, screenCanvas);
+    el.host_screen_preview.src = image;
+    el.host_screen_preview.classList.remove("hidden");
+    if (!socket || socket.readyState !== WebSocket.OPEN) { setText(el.screen_share_status, "Screen preview ready · host relay is reconnecting…"); return; }
+    if (!room || room.status !== "live") { setText(el.screen_share_status, "Screen preview ready · start interpretation to send it to the audience."); return; }
+    if (!image || image.length >= 600000) { setText(el.screen_share_status, "Screen frame is still too large to relay. Try sharing a browser tab or smaller window."); return; }
+    socket.send(JSON.stringify({ type: "screen.frame", image }));
+    screenFramesSent += 1;
+    setText(el.screen_share_status, `Screen sharing LIVE · ${screenFramesSent} frames sent to the audience · ${Math.round(image.length / 1024)} KB/frame`);
   };
-  sendFrame(); screenTimer = setInterval(sendFrame, 900); screenTimer.unref?.();
-  stream.getVideoTracks()[0]?.addEventListener("ended", () => stopScreenRelayOnly());
+  sendFrame();
+  screenTimer = setInterval(sendFrame, 650);
+  screenTimer.unref?.();
+  stream.getVideoTracks()[0]?.addEventListener("ended", () => stopScreenShare());
 }
 function stopScreenRelayOnly() {
   clearInterval(screenTimer); screenTimer = null;
   if (screenVideo) { screenVideo.pause(); screenVideo.srcObject = null; }
-  screenVideo = null; screenCanvas = null; el.host_screen_preview.classList.add("hidden"); setText(el.screen_share_status, "Not sharing yet.");
+  screenVideo = null; screenCanvas = null;
+  el.host_screen_preview.classList.add("hidden");
 }
 function stopScreenShare() {
   stopScreenRelayOnly();
   if (screenStream && screenStream !== mediaStream) screenStream.getTracks().forEach((track) => track.stop());
   screenStream = null;
+  screenFramesSent = 0;
+  el.share_screen.textContent = "Share screen to audience";
+  setText(el.screen_share_status, "Not sharing yet.");
 }
 
 async function startCapture() {
@@ -210,24 +294,32 @@ el.start_room.addEventListener("click", async () => {
   clearError(); el.start_room.disabled = true; engineStatus = "Requesting audio source…"; renderLiveDiagnostic();
   try {
     await startCapture(); engineStatus = "Connecting translation engine…"; renderLiveDiagnostic();
-    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = "Professional English interpretation connected; listening for speech"; renderLiveDiagnostic();
+    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = "English interpretation connected; listening for speech"; renderLiveDiagnostic();
   } catch (error) { showError(error); engineStatus = error?.message || "Could not start interpretation"; renderLiveDiagnostic(); el.start_room.disabled = false; stopCapture(); }
 });
 
 el.monitor_audio.addEventListener("click", async () => {
-  try { await monitor.enable(); el.monitor_audio.textContent = "English monitor ON"; el.monitor_audio.disabled = true; }
-  catch (error) { showError(new Error(`Could not enable English monitor: ${error.message}`)); }
+  clearError();
+  try {
+    if (monitor.enabled) {
+      monitor.disable();
+      el.monitor_audio.textContent = "Monitor English audio";
+      return;
+    }
+    await monitor.enable();
+    el.monitor_audio.textContent = "Turn English monitor OFF";
+  } catch (error) { showError(new Error(`Could not enable English monitor: ${error.message}`)); }
 });
 
 el.share_screen.addEventListener("click", async () => {
   clearError();
   try {
+    if (screenStream) { stopScreenShare(); return; }
     if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing is not supported by this browser.");
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-    if (!stream.getVideoTracks().length) throw new Error("No screen/video track was shared.");
-    if (screenStream && screenStream !== mediaStream) screenStream.getTracks().forEach((track) => track.stop());
-    await prepareScreenRelay(stream); screenStream = stream; el.share_screen.textContent = "Screen sharing ON";
-  } catch (error) { showError(error); }
+    if (!stream.getVideoTracks().length) { stream.getTracks().forEach((track) => track.stop()); throw new Error("No screen/video track was shared."); }
+    await prepareScreenRelay(stream);
+  } catch (error) { showError(error); setText(el.screen_share_status, `Screen sharing error: ${error.message}`); }
 });
 
 el.end_room.addEventListener("click", async () => {
