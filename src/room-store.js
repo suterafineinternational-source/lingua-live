@@ -47,6 +47,13 @@ function normalizePin(pin) {
   return value;
 }
 
+function normalizeScheduledAt(value) {
+  if (value == null || value === "") return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new AppError(400, "INVALID_SCHEDULE", "The scheduled date/time is not valid.");
+  return date.toISOString();
+}
+
 export class RoomStore {
   constructor({ now = Date.now, retentionMs = 60 * 60 * 1000 } = {}) {
     this.rooms = new Map();
@@ -63,7 +70,7 @@ export class RoomStore {
     const room = {
       code,
       title: cleanText(title, 120, "Lingua Live event") || "Lingua Live event",
-      scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+      scheduledAt: normalizeScheduledAt(scheduledAt),
       sourceLanguage: normalizeLanguage(sourceLanguage, "it"),
       targetLanguage: normalizeLanguage(targetLanguage, "en"),
       hostTokenHash: tokenHash(hostToken),
@@ -177,10 +184,24 @@ export class RoomStore {
     return room.transcriptRows.map((row) => ({ ...row, timestamp: new Date(row.at).toISOString() }));
   }
 
+  summaryView(room) {
+    const rows = this.transcriptView(room);
+    return {
+      event: this.hostView(room),
+      summary: {
+        durationMs: room.startedAt ? Math.max(0, (room.endedAt || this.now()) - room.startedAt) : 0,
+        transcriptRows: rows.length,
+        sourceRows: rows.filter((row) => row.source).length,
+        translatedRows: rows.filter((row) => row.translation).length,
+      },
+      transcript: rows,
+    };
+  }
+
   prune() {
     const cutoff = this.now() - this.retentionMs;
     for (const [code, room] of this.rooms) if (room.status === "ended" && room.endedAt < cutoff) this.rooms.delete(code);
   }
 }
 
-export { normalizeGlossary };
+export { normalizeGlossary, normalizeScheduledAt };
