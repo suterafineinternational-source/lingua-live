@@ -13,16 +13,19 @@ export class RealtimeQualityMonitor {
     this.translationLags = [];
     this.translationCompleted = 0;
     this.audioChunks = 0;
-    this.inputChunks = 0;
-    this.inputDrops = 0;
+    this.sentInputChunks = 0;
+    this.capturedInputChunks = 0;
     this.nonSilentChunks = 0;
     this.sessionStartedAt = this.now();
   }
 
-  recordInput({ nonSilent = false, sent = true } = {}) {
-    this.inputChunks += 1;
-    if (nonSilent) this.nonSilentChunks += 1;
-    if (!sent) this.inputDrops += 1;
+  recordInputSent() {
+    this.sentInputChunks += 1;
+  }
+
+  recordCaptureTotals(captured = 0, nonSilent = 0) {
+    this.capturedInputChunks = Math.max(this.capturedInputChunks, Number(captured) || 0);
+    this.nonSilentChunks = Math.max(this.nonSilentChunks, Number(nonSilent) || 0);
   }
 
   recordSourceDelta(itemId = "current") {
@@ -81,11 +84,12 @@ export class RealtimeQualityMonitor {
     const latestLagMs = lags.at(-1) ?? null;
     const averageLagMs = lags.length ? Math.round(lags.reduce((sum, value) => sum + value, 0) / lags.length) : null;
     const maxLagMs = lags.length ? Math.max(...lags) : null;
-    const dropRate = this.inputChunks ? this.inputDrops / this.inputChunks : 0;
+    const inputDrops = Math.max(0, this.capturedInputChunks - this.sentInputChunks);
+    const dropRate = this.capturedInputChunks ? inputDrops / this.capturedInputChunks : 0;
     const pendingTranslations = Math.max(0, this.sourceCompleted.size - this.translationCompleted);
 
     let health = "warming-up";
-    if (this.inputChunks > 20 && (latestLagMs != null || this.audioChunks > 0)) {
+    if (this.sentInputChunks > 20 && (latestLagMs != null || this.audioChunks > 0)) {
       const severe = dropRate > 0.02 || (averageLagMs ?? 0) > 5000 || playbackBufferSeconds > 5 || pendingTranslations > 3;
       const warning = dropRate > 0 || (averageLagMs ?? 0) > 2500 || playbackBufferSeconds > 2.5 || pendingTranslations > 1;
       health = severe ? "critical" : warning ? "warning" : "healthy";
@@ -99,8 +103,9 @@ export class RealtimeQualityMonitor {
       averageLagMs,
       maxLagMs,
       playbackBufferSeconds: Math.max(0, Number(playbackBufferSeconds) || 0),
-      inputChunks: this.inputChunks,
-      inputDrops: this.inputDrops,
+      inputChunks: this.sentInputChunks,
+      capturedInputChunks: this.capturedInputChunks,
+      inputDrops,
       dropRate,
       nonSilentChunks: this.nonSilentChunks,
       audioChunks: this.audioChunks,
