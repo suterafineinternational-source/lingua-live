@@ -5,6 +5,7 @@ import express from "express";
 import QRCode from "qrcode";
 import WebSocket, { WebSocketServer } from "ws";
 import { AppError, errorPayload } from "./errors.js";
+import { createIntegrationRegistry } from "./integrations.js";
 import { createOpenAIRealtimeFactory } from "./openai-realtime.js";
 import { RoomStore } from "./room-store.js";
 import { createStorage } from "./storage.js";
@@ -22,11 +23,12 @@ function sendJson(socket, payload) {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-function broadcast(room, payload, { audienceOnly = false, hostOnly = false } = {}) {
+function broadcast(room, payload, { audienceOnly = false, hostOnly = false, onBackpressureDrop } = {}) {
   for (const client of room.clients.values()) {
     if (audienceOnly && client.role !== "audience") continue;
     if (hostOnly && client.role !== "host") continue;
     if (payload.type === "audio.delta" && client.ws.bufferedAmount > WS_MAX_BUFFERED_BYTES) {
+      onBackpressureDrop?.(client);
       if (!client.backpressureNotified) {
         client.backpressureNotified = true;
         sendJson(client.ws, {
@@ -100,12 +102,32 @@ function sseSend(response, event, data) {
   response.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function framePolicyFor(request) {
+  if (request.path === "/embed.html") {
+    return {
+      frameOptions: null,
+      frameAncestors: "frame-ancestors *;",
+    };
+  }
+  if (request.path.startsWith("/audience/")) {
+    return {
+      frameOptions: "SAMEORIGIN",
+      frameAncestors: "frame-ancestors 'self';",
+    };
+  }
+  return {
+    frameOptions: "DENY",
+    frameAncestors: "frame-ancestors 'none';",
+  };
+}
+
 export function createLinguaServer(options = {}) {
   const logger = options.logger || console;
   const hostReconnectGraceMs = options.hostReconnectGraceMs ?? 30_000;
   const roomRetentionMs = options.roomRetentionMs ?? 60 * 60 * 1000;
   const rooms = options.rooms || new RoomStore({ retentionMs: roomRetentionMs });
   const storage = createStorage(options);
+  const integrations = options.integrations || createIntegrationRegistry(options.integrationAdapters);
   const metrics = {
     roomsCreated: 0,
     roomsStarted: 0,
@@ -128,15 +150,16 @@ export function createLinguaServer(options = {}) {
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
   app.use((request, response, next) => {
+    const frame = framePolicyFor(request);
     response.set({
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
-      "X-Frame-Options": request.path === "/embed.html" ? "SAMEORIGIN" : "DENY",
       "Cross-Origin-Opener-Policy": "same-origin",
       "Permissions-Policy": "microphone=(self), display-capture=(self)",
       "Content-Security-Policy":
-        "default-src 'self'; frame-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; worker-src 'self' blob:",
+        `default-src 'self'; ${frame.frameAncestors} frame-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:`,
     });
+    if (frame.frameOptions) response.set("X-Frame-Options", frame.frameOptions);
     next();
   });
   app.use(express.json({ limit: "700kb" }));
@@ -152,6 +175,7 @@ export function createLinguaServer(options = {}) {
   app.get("/audience/:code", (_request, response) => response.sendFile(path.join(publicDirectory, "audience.html")));
   app.get("/health", (_request, response) => response.json({ ok: true }));
   app.get("/ready", (_request, response) => response.json({ ok: true, rooms: rooms.rooms.size }));
+  app.get("/api/integrations", (_request, response) => response.json({ integrations: integrations.capabilities() }));
   app.get("/metrics", (_request, response) => {
     let activeRooms = 0;
     let liveRooms = 0;
@@ -312,6 +336,16 @@ export function createLinguaServer(options = {}) {
     }
   });
 
+  app.get("/api/rooms/:code/summary", (request, response, next) => {
+    try {
+      const room = rooms.get(request.params.code);
+      rooms.authenticate(room, bearerToken(request));
+      response.json(rooms.summaryView(room));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/rooms/:code/transcript.csv", (request, response, next) => {
     try {
       const room = rooms.get(request.params.code);
@@ -340,13 +374,22 @@ export function createLinguaServer(options = {}) {
     }
   }
 
+  function broadcastRoom(room, payload, options = {}) {
+    broadcast(room, payload, {
+      ...options,
+      onBackpressureDrop: () => {
+        metrics.listenerBackpressureDrops += 1;
+      },
+    });
+  }
+
   async function startRoom(room) {
     if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
     if (room.status === "live") return;
     if (room.startPromise) return room.startPromise;
 
     room.status = "starting";
-    broadcast(room, { type: "room.status", room: rooms.publicView(room) });
+    broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
     const operation = (async () => {
       let realtime;
       try {
@@ -360,11 +403,11 @@ export function createLinguaServer(options = {}) {
               metrics.transcriptEvents += 1;
               const row = rooms.addTranscript(room, { itemId: event.itemId, source: event.transcript });
               storage.appendTranscript(room.code, row).catch((error) => logger.error("storage append failed", error?.message));
-              broadcast(room, event, { hostOnly: true });
+              broadcastRoom(room, event, { hostOnly: true });
               return;
             }
             if (event.type === "source_transcript.delta") {
-              broadcast(room, event, { hostOnly: true });
+              broadcastRoom(room, event, { hostOnly: true });
               return;
             }
             if (event.type === "transcript.done") {
@@ -378,9 +421,9 @@ export function createLinguaServer(options = {}) {
             if (event.type === "transcript.delta") emitSseCaption(room, event);
             if (event.type === "audio.delta") metrics.audioEvents += 1;
             if (event.type === "service.error") metrics.upstreamErrors += 1;
-            broadcast(room, event, { audienceOnly: event.type !== "service.error" });
+            broadcastRoom(room, event, { audienceOnly: event.type !== "service.error" });
           },
-          onStatus: (status) => broadcast(room, { type: "service.status", ...status }),
+          onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status }),
         });
         room.realtime = realtime;
         await realtime.start();
@@ -395,13 +438,13 @@ export function createLinguaServer(options = {}) {
         room.startedAt ||= rooms.now();
         metrics.roomsStarted += 1;
         await storage.saveEvent(rooms.hostView(room));
-        broadcast(room, { type: "room.status", room: rooms.publicView(room) });
+        broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
       } catch (error) {
         metrics.upstreamErrors += 1;
         realtime?.close?.();
         if (room.realtime === realtime) room.realtime = null;
         if (room.status !== "ended") room.status = "created";
-        broadcast(room, { type: "room.status", room: rooms.publicView(room) });
+        broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
         throw error;
       }
     })();
@@ -435,7 +478,7 @@ export function createLinguaServer(options = {}) {
     room.realtime?.close?.();
     room.realtime = null;
     storage.saveEvent(rooms.hostView(room)).catch((error) => logger.error("storage save failed", error?.message));
-    broadcast(room, { type: "room.ended", room: rooms.publicView(room) });
+    broadcastRoom(room, { type: "room.ended", room: rooms.publicView(room) });
     for (const response of room.sseClients || []) {
       try {
         sseSend(response, "ended", { room: rooms.publicView(room) });
@@ -513,7 +556,7 @@ export function createLinguaServer(options = {}) {
       transcript: role === "host" ? rooms.transcriptView(room) : undefined,
       audio: { format: "pcm16", sampleRate: 24000, channels: 1 },
     });
-    broadcast(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
+    broadcastRoom(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
 
     ws.on("message", (data) => {
       try {
@@ -542,7 +585,7 @@ export function createLinguaServer(options = {}) {
       if (room.clients.get(key) !== client) return;
       room.clients.delete(key);
       if (role === "audience") {
-        broadcast(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
+        broadcastRoom(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
       } else if ((room.status === "live" || room.status === "starting") && !room.hostGraceTimer) {
         room.hostGraceTimer = setTimeout(() => {
           room.hostGraceTimer = null;
@@ -551,7 +594,7 @@ export function createLinguaServer(options = {}) {
           room.realtime?.close?.();
           room.realtime = null;
           room.status = "paused";
-          broadcast(room, { type: "room.status", room: rooms.publicView(room) });
+          broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
         }, hostReconnectGraceMs);
         room.hostGraceTimer.unref?.();
       }
@@ -569,5 +612,5 @@ export function createLinguaServer(options = {}) {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
 
-  return { app, server, rooms, storage, metrics, startRoom, endRoom, close };
+  return { app, server, rooms, storage, integrations, metrics, startRoom, endRoom, close };
 }
