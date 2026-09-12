@@ -19,6 +19,30 @@ let firstSourceAudioAt = 0;
 let firstTranslatedTextAt = 0;
 let firstTranslatedAudioAt = 0;
 
+function reportTransport(mode, detail = "") {
+  const node = document.getElementById("transport-mode");
+  const detailNode = document.getElementById("transport-detail");
+  const labels = {
+    idle: "TRANSPORT: WAITING",
+    connecting: "TRANSPORT: CONNECTING…",
+    webrtc: "TRANSPORT: LOW-LATENCY WEBRTC",
+    fallback: "TRANSPORT: SERVER FALLBACK",
+  };
+  if (node) {
+    node.textContent = labels[mode] || labels.idle;
+    node.dataset.state = mode;
+  }
+  if (detailNode) {
+    detailNode.textContent = detail || ({
+      idle: "Start interpretation to select the fastest available path.",
+      connecting: "Negotiating a direct browser-to-OpenAI Realtime Translation connection.",
+      webrtc: "Direct browser WebRTC translation is active; translated audio is relayed to the Audience room.",
+      fallback: "The direct path is unavailable, so Lingua Live is using the server translation relay.",
+    }[mode] || "");
+  }
+  window.dispatchEvent(new CustomEvent("lingua:transport", { detail: { mode, message: detail, at: Date.now() } }));
+}
+
 function bytesToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -110,6 +134,7 @@ async function cleanupDirect() {
     try { await relayContext.close(); } catch {}
   }
   relayContext = null;
+  reportTransport("idle");
 }
 
 async function requestJson(url, init) {
@@ -124,6 +149,7 @@ async function connectDirectTranslation({ roomCode, authorization }) {
   if (!window.RTCPeerConnection) throw new Error("This browser does not support WebRTC translation.");
   connectingDirect = true;
   resetLatency();
+  reportTransport("connecting");
 
   const audioTracks = sourceStream.getAudioTracks();
   const enabled = audioTracks.map((track) => track.enabled);
@@ -178,6 +204,7 @@ async function connectDirectTranslation({ roomCode, authorization }) {
     connectingDirect = false;
     audioTracks.forEach((track, index) => { track.enabled = enabled[index] !== false; });
     noteLatency("source");
+    reportTransport("webrtc");
     console.info("[Lingua] Low-latency browser WebRTC translation active");
     return start;
   } catch (error) {
@@ -237,20 +264,30 @@ window.fetch = async (input, init = {}) => {
     return nativeFetch(input, init);
   }
 
-  if (!startMatch || method !== "POST" || connectingDirect || directActive || !window.RTCPeerConnection || !sourceStream?.getAudioTracks().length) {
+  if (!startMatch || method !== "POST" || connectingDirect || directActive) {
+    return nativeFetch(input, init);
+  }
+
+  if (!window.RTCPeerConnection || !sourceStream?.getAudioTracks().length) {
+    reportTransport("fallback", "Browser WebRTC translation is unavailable for this source; using the server relay.");
     return nativeFetch(input, init);
   }
 
   const headers = new Headers(init.headers || (typeof input !== "string" ? input.headers : undefined));
   const authorization = headers.get("Authorization") || headers.get("authorization");
-  if (!authorization) return nativeFetch(input, init);
+  if (!authorization) {
+    reportTransport("fallback", "Host authorization was unavailable for the direct path; using the server relay.");
+    return nativeFetch(input, init);
+  }
 
   try {
     return await connectDirectTranslation({ roomCode: startMatch[1].toUpperCase(), authorization });
   } catch (error) {
     console.warn("Low-latency WebRTC translation unavailable; falling back to server relay:", error?.message || error);
+    reportTransport("fallback", "Direct WebRTC could not be established; the server translation relay is active.");
     return nativeFetch(input, init);
   }
 };
 
+reportTransport("idle");
 window.addEventListener("beforeunload", () => { void cleanupDirect(); });
