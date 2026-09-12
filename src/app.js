@@ -7,12 +7,22 @@ import WebSocket, { WebSocketServer } from "ws";
 import { AppError, errorPayload } from "./errors.js";
 import { createIntegrationRegistry } from "./integrations.js";
 import { createOpenAIRealtimeFactory } from "./openai-realtime.js";
+import { createTranslationClientSecret } from "./openai-translation-client.js";
 import { RoomStore } from "./room-store.js";
 import { createStorage } from "./storage.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const publicDirectory = path.resolve(moduleDirectory, "../public");
 const WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+const MAX_RELAY_AUDIO_BASE64 = 128_000;
+const RELAY_EVENT_TYPES = new Set([
+  "source_transcript.delta",
+  "source_transcript.done",
+  "transcript.delta",
+  "transcript.done",
+  "speaker.status",
+  "service.error",
+]);
 
 function bearerToken(request) {
   const value = request.get("authorization") || "";
@@ -108,6 +118,31 @@ function framePolicyFor(request) {
   return { frameOptions: "DENY", frameAncestors: "frame-ancestors 'none';" };
 }
 
+function validateRelayedAudio(audio) {
+  if (typeof audio !== "string" || !audio || audio.length > MAX_RELAY_AUDIO_BASE64 || audio.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(audio)) {
+    throw new AppError(400, "INVALID_TRANSLATED_AUDIO", "Translated audio relay chunks must be valid base64 PCM audio.");
+  }
+  return audio;
+}
+
+function sanitizeRelayedEvent(raw) {
+  if (!raw || typeof raw !== "object" || !RELAY_EVENT_TYPES.has(raw.type)) throw new AppError(400, "INVALID_TRANSLATION_EVENT", "Unsupported translated event type.");
+  const event = { type: raw.type };
+  if (raw.itemId != null) event.itemId = String(raw.itemId).slice(0, 200);
+  if (raw.responseId != null) event.responseId = String(raw.responseId).slice(0, 200);
+  if (raw.delta != null) event.delta = String(raw.delta).slice(0, 12_000);
+  if (raw.transcript != null) event.transcript = String(raw.transcript).slice(0, 24_000);
+  if (raw.type === "speaker.status") event.speaking = Boolean(raw.speaking);
+  if (raw.type === "service.error") {
+    event.error = {
+      code: String(raw.error?.code || "INTERPRETATION_SERVICE_ERROR").slice(0, 100),
+      message: String(raw.error?.message || "The interpretation service reported an error.").slice(0, 500),
+      retriable: Boolean(raw.error?.retriable),
+    };
+  }
+  return event;
+}
+
 export function createLinguaServer(options = {}) {
   const logger = options.logger || console;
   const hostReconnectGraceMs = options.hostReconnectGraceMs ?? 30_000;
@@ -119,13 +154,15 @@ export function createLinguaServer(options = {}) {
     roomsCreated: 0, roomsStarted: 0, roomsEnded: 0, websocketConnections: 0,
     transcriptEvents: 0, audioEvents: 0, upstreamErrors: 0, listenerBackpressureDrops: 0,
   };
+  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   const realtimeFactory = options.realtimeFactory || createOpenAIRealtimeFactory({
-    apiKey: options.apiKey ?? process.env.OPENAI_API_KEY,
+    apiKey,
     model: options.model ?? process.env.OPENAI_REALTIME_MODEL,
     mode: options.mode ?? process.env.OPENAI_TRANSLATION_MODE,
     promptedModel: options.promptedModel ?? process.env.OPENAI_PROMPTED_REALTIME_MODEL,
     logger,
   });
+  const translationClientSecretFactory = options.translationClientSecretFactory || ((params) => createTranslationClientSecret({ ...params, apiKey }));
 
   const app = express();
   app.disable("x-powered-by");
@@ -137,7 +174,7 @@ export function createLinguaServer(options = {}) {
       "Referrer-Policy": "no-referrer",
       "Cross-Origin-Opener-Policy": "same-origin",
       "Permissions-Policy": "microphone=(self), display-capture=(self)",
-      "Content-Security-Policy": `default-src 'self'; ${frame.frameAncestors} frame-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:`,
+      "Content-Security-Policy": `default-src 'self'; ${frame.frameAncestors} frame-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self' https://api.openai.com ws: wss:; worker-src 'self' blob:`,
     });
     if (frame.frameOptions) response.set("X-Frame-Options", frame.frameOptions);
     next();
@@ -241,6 +278,37 @@ export function createLinguaServer(options = {}) {
   function broadcastRoom(room, payload, options = {}) {
     broadcast(room, payload, { ...options, onBackpressureDrop: () => { metrics.listenerBackpressureDrops += 1; } });
   }
+  function processTranslationEvent(room, event) {
+    if (event.type === "source_transcript.done") {
+      metrics.transcriptEvents += 1;
+      const row = rooms.addTranscript(room, { itemId: event.itemId, source: event.transcript });
+      storage.appendTranscript(room.code, row).catch((error) => logger.error("storage append failed", error?.message));
+      broadcastRoom(room, event, { hostOnly: true });
+      return;
+    }
+    if (event.type === "source_transcript.delta") {
+      broadcastRoom(room, event, { hostOnly: true });
+      return;
+    }
+    if (event.type === "transcript.done") {
+      metrics.transcriptEvents += 1;
+      const completedEvent = { ...event, at: rooms.now() };
+      rooms.addHistory(room, completedEvent);
+      const row = rooms.addTranscript(room, { itemId: event.itemId, translation: event.transcript });
+      storage.appendTranscript(room.code, row).catch((error) => logger.error("storage append failed", error?.message));
+      emitSseCaption(room, completedEvent);
+    }
+    if (event.type === "transcript.delta") {
+      emitSseCaption(room, event);
+      if (room.transport === "webrtc" && !room.firstTranslationTextAt) {
+        room.firstTranslationTextAt = rooms.now();
+        logger.info?.(`[Lingua] WebRTC first translated text after ${Math.max(0, room.firstTranslationTextAt - (room.startedAt || room.firstTranslationTextAt))} ms`);
+      }
+    }
+    if (event.type === "audio.delta") metrics.audioEvents += 1;
+    if (event.type === "service.error") metrics.upstreamErrors += 1;
+    broadcastRoom(room, event);
+  }
 
   async function startRoom(room) {
     if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
@@ -252,26 +320,10 @@ export function createLinguaServer(options = {}) {
       try {
         realtime = realtimeFactory({
           roomCode: room.code, glossary: room.glossary, sourceLanguage: room.sourceLanguage, targetLanguage: room.targetLanguage,
-          onEvent: (event) => {
-            if (event.type === "source_transcript.done") {
-              metrics.transcriptEvents += 1; const row = rooms.addTranscript(room, { itemId: event.itemId, source: event.transcript });
-              storage.appendTranscript(room.code, row).catch((error) => logger.error("storage append failed", error?.message));
-              broadcastRoom(room, event, { hostOnly: true }); return;
-            }
-            if (event.type === "source_transcript.delta") { broadcastRoom(room, event, { hostOnly: true }); return; }
-            if (event.type === "transcript.done") {
-              metrics.transcriptEvents += 1; const completedEvent = { ...event, at: rooms.now() }; rooms.addHistory(room, completedEvent);
-              const row = rooms.addTranscript(room, { itemId: event.itemId, translation: event.transcript });
-              storage.appendTranscript(room.code, row).catch((error) => logger.error("storage append failed", error?.message)); emitSseCaption(room, completedEvent);
-            }
-            if (event.type === "transcript.delta") emitSseCaption(room, event);
-            if (event.type === "audio.delta") metrics.audioEvents += 1;
-            if (event.type === "service.error") metrics.upstreamErrors += 1;
-            // Host must also receive translated text/audio so it can monitor exactly what the audience hears.
-            broadcastRoom(room, event);
-          },
+          onEvent: (event) => processTranslationEvent(room, event),
           onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status }),
         });
+        room.transport = "server-websocket";
         room.realtime = realtime; await realtime.start();
         if (room.status === "ended") { if (room.realtime === realtime) { realtime.close?.(); room.realtime = null; } return; }
         room.status = "live"; room.startedAt ||= rooms.now(); metrics.roomsStarted += 1; await storage.saveEvent(rooms.hostView(room)); broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
@@ -282,10 +334,58 @@ export function createLinguaServer(options = {}) {
     room.startPromise = operation; operation.finally(() => { if (room.startPromise === operation) room.startPromise = null; }).catch(() => {}); return operation;
   }
 
-  app.post("/api/rooms/:code/start", async (request, response, next) => { try { const room = rooms.get(request.params.code); rooms.authenticate(room, bearerToken(request)); await startRoom(room); response.json({ room: rooms.hostView(room) }); } catch (error) { next(error); } });
+  app.post("/api/rooms/:code/start", async (request, response, next) => {
+    try { const room = rooms.get(request.params.code); rooms.authenticate(room, bearerToken(request)); await startRoom(room); response.json({ room: rooms.hostView(room) }); }
+    catch (error) { next(error); }
+  });
+
+  app.post("/api/rooms/:code/webrtc-session", async (request, response, next) => {
+    try {
+      const room = rooms.get(request.params.code);
+      rooms.authenticate(room, bearerToken(request));
+      if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
+      const session = await translationClientSecretFactory({
+        sourceLanguage: room.sourceLanguage,
+        targetLanguage: room.targetLanguage,
+        sourceType: request.body?.sourceType === "display" ? "display" : "microphone",
+        model: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-translate",
+      });
+      response.json(session);
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/rooms/:code/start-webrtc", async (request, response, next) => {
+    try {
+      const room = rooms.get(request.params.code);
+      rooms.authenticate(room, bearerToken(request));
+      if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
+      if (room.status !== "live") {
+        room.realtime?.close?.();
+        room.realtime = null;
+        room.transport = "webrtc";
+        room.status = "live";
+        room.startedAt ||= rooms.now();
+        room.firstTranslationTextAt = null;
+        room.firstTranslationAudioAt = null;
+        metrics.roomsStarted += 1;
+        await storage.saveEvent(rooms.hostView(room));
+        broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
+      }
+      broadcastRoom(room, {
+        type: "service.status",
+        state: "connected",
+        message: "Low-latency browser WebRTC translation connected.",
+        engineMode: "translate",
+        engineModel: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-translate",
+        transport: "webrtc",
+      });
+      response.json({ room: rooms.hostView(room), transport: "webrtc" });
+    } catch (error) { next(error); }
+  });
 
   function endRoom(room) {
-    if (room.status === "ended") return; room.status = "ended"; room.endedAt = rooms.now(); metrics.roomsEnded += 1; clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; room.realtime?.close?.(); room.realtime = null;
+    if (room.status === "ended") return;
+    room.status = "ended"; room.endedAt = rooms.now(); metrics.roomsEnded += 1; clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; room.realtime?.close?.(); room.realtime = null; room.transport = null;
     storage.saveEvent(rooms.hostView(room)).catch((error) => logger.error("storage save failed", error?.message)); broadcastRoom(room, { type: "room.ended", room: rooms.publicView(room) });
     for (const response of room.sseClients || []) { try { sseSend(response, "ended", { room: rooms.publicView(room) }); response.end(); } catch {} }
     room.sseClients?.clear(); for (const client of room.clients.values()) client.ws.close(1000, "Room ended"); room.clients.clear();
@@ -335,8 +435,26 @@ export function createLinguaServer(options = {}) {
           if (typeof message.image !== "string" || !message.image.startsWith("data:image/jpeg;base64,") || message.image.length > 650_000) throw new AppError(400, "INVALID_SCREEN_FRAME", "Screen frame is invalid or too large.");
           broadcastRoom(room, { type: "screen.frame", image: message.image, at: Date.now() }, { audienceOnly: true }); return;
         }
+        if (message.type === "translation.event") {
+          if (room.status !== "live" || room.transport !== "webrtc") throw new AppError(409, "ROOM_NOT_LIVE", "Low-latency interpretation is not active.", { retriable: true });
+          processTranslationEvent(room, sanitizeRelayedEvent(message.event));
+          return;
+        }
+        if (message.type === "translation.audio") {
+          if (room.status !== "live" || room.transport !== "webrtc") throw new AppError(409, "ROOM_NOT_LIVE", "Low-latency interpretation is not active.", { retriable: true });
+          const audio = validateRelayedAudio(message.audio);
+          metrics.audioEvents += 1;
+          if (!room.firstTranslationAudioAt) {
+            room.firstTranslationAudioAt = rooms.now();
+            logger.info?.(`[Lingua] WebRTC first translated audio relay after ${Math.max(0, room.firstTranslationAudioAt - (room.startedAt || room.firstTranslationAudioAt))} ms`);
+          }
+          broadcastRoom(room, { type: "audio.delta", audio, format: "pcm16", sampleRate: 24000 });
+          return;
+        }
         if (message.type !== "audio.append") throw new AppError(400, "UNKNOWN_MESSAGE", "Unknown host message type.");
-        if (room.status !== "live" || !room.realtime) throw new AppError(409, "ROOM_NOT_LIVE", "Start interpretation before sending audio.", { retriable: true });
+        if (room.status !== "live") throw new AppError(409, "ROOM_NOT_LIVE", "Start interpretation before sending audio.", { retriable: true });
+        if (room.transport === "webrtc") return;
+        if (!room.realtime) throw new AppError(409, "ROOM_NOT_LIVE", "Server interpretation is unavailable.", { retriable: true });
         room.realtime.appendAudio(message.audio);
       } catch (error) {
         if (error instanceof SyntaxError) error = new AppError(400, "INVALID_MESSAGE_JSON", "WebSocket messages must be valid JSON.");
@@ -350,7 +468,7 @@ export function createLinguaServer(options = {}) {
         broadcastRoom(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
         broadcastRoom(room, { type: "listener.status", clientId, disconnected: true }, { hostOnly: true });
       } else if ((room.status === "live" || room.status === "starting") && !room.hostGraceTimer) {
-        room.hostGraceTimer = setTimeout(() => { room.hostGraceTimer = null; const hasHost = [...room.clients.values()].some((connected) => connected.role === "host"); if (hasHost || room.status === "ended") return; room.realtime?.close?.(); room.realtime = null; room.status = "paused"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); }, hostReconnectGraceMs);
+        room.hostGraceTimer = setTimeout(() => { room.hostGraceTimer = null; const hasHost = [...room.clients.values()].some((connected) => connected.role === "host"); if (hasHost || room.status === "ended") return; room.realtime?.close?.(); room.realtime = null; room.transport = null; room.status = "paused"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); }, hostReconnectGraceMs);
         room.hostGraceTimer.unref?.();
       }
     });
