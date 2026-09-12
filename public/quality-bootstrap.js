@@ -50,6 +50,32 @@ function verdict(snapshot) {
   return `Measuring at ${snapshot.wpm} WPM…`;
 }
 
+function renderEnglishDelay(snapshot) {
+  const delayNode = element("current-english-delay");
+  const detailNode = element("english-delay-detail");
+  if (!delayNode) return;
+
+  if (!roomLive) {
+    delayNode.textContent = "Current English delay: —";
+    delayNode.dataset.state = "idle";
+    if (detailNode) detailNode.textContent = "Measured continuously from the live translation stream.";
+    return;
+  }
+
+  if (snapshot.latestLagMs == null) {
+    delayNode.textContent = "Current English delay: measuring…";
+    delayNode.dataset.state = "idle";
+    if (detailNode) detailNode.textContent = "Waiting for matching Italian and English realtime segments.";
+    return;
+  }
+
+  const estimatedDelayMs = Math.max(0, snapshot.latestLagMs + snapshot.playbackBufferSeconds * 1000);
+  const seconds = estimatedDelayMs / 1000;
+  delayNode.textContent = `Current English delay: ${seconds.toFixed(2)} s`;
+  delayNode.dataset.state = seconds <= 2.5 ? "good" : seconds <= 5 ? "watch" : "high";
+  if (detailNode) detailNode.textContent = `Live estimate · translation onset ${formatLag(snapshot.latestLagMs)} + English playback buffer ${formatSeconds(snapshot.playbackBufferSeconds)}.`;
+}
+
 function renderQuality() {
   const snapshot = quality.snapshot({ playbackBufferSeconds: playbackBufferSeconds() });
   const health = element("quality-health");
@@ -65,6 +91,7 @@ function renderQuality() {
   if (element("quality-input")) element("quality-input").textContent = `${Math.max(0, snapshot.inputChunks)} sent · ${snapshot.inputDrops} missed`;
   if (element("quality-output")) element("quality-output").textContent = `${snapshot.audioChunks} English audio chunks · ${snapshot.pendingTranslations} pending segment${snapshot.pendingTranslations === 1 ? "" : "s"}`;
   if (element("quality-verdict")) element("quality-verdict").textContent = verdict(snapshot);
+  renderEnglishDelay(snapshot);
 }
 
 function startLiveMeasurement() {
