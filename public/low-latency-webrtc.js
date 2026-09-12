@@ -70,7 +70,6 @@ function normalizeRealtimeEvent(event) {
 
 async function relayTranslatedTrack(stream) {
   if (!stream?.getAudioTracks().length) throw new Error("OpenAI WebRTC connected without a translated audio track.");
-  noteLatency("audio");
   relayContext = new AudioContext();
   await relayContext.audioWorklet.addModule("/translated-relay-worklet.js?v=20260912-1");
   await relayContext.resume();
@@ -81,6 +80,7 @@ async function relayTranslatedTrack(stream) {
   relaySource.connect(relayNode).connect(relaySilent).connect(relayContext.destination);
   relayNode.port.onmessage = ({ data }) => {
     if (!directActive) return;
+    noteLatency("audio");
     hostSend({ type: "translation.audio", audio: bytesToBase64(data), sampleRate: 24000 });
   };
 }
