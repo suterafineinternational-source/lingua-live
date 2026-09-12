@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260912-2">
     <link rel="stylesheet" href="/quality.css?v=20260911-1">
   </head>
   <body>
@@ -81,6 +81,18 @@
           </div>
 
           <p id="service-status" class="notice">Ready to start.</p>
+          <div class="transport-dashboard" aria-label="Live translation transport and latency">
+            <div class="transport-tile">
+              <span>Translation path</span>
+              <strong id="transport-mode" data-state="idle">TRANSPORT: WAITING</strong>
+              <small id="transport-detail">Start interpretation to select the fastest available path.</small>
+            </div>
+            <div class="transport-tile">
+              <span>Audience English timing</span>
+              <strong id="current-english-delay" data-state="idle">Current English delay: —</strong>
+              <small id="english-delay-detail">Measured continuously from the live translation stream.</small>
+            </div>
+          </div>
           <div class="controls">
             <button id="start-room">2. Start interpretation</button>
             <button id="monitor-audio" class="secondary">Monitor English audio</button>
@@ -140,6 +152,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host-entry.js?v=20260912-1"></script>
+    <script type="module" src="/host-entry.js?v=20260912-2"></script>
   </body>
 </html>
