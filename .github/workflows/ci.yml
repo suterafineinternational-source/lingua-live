@@ -21,11 +21,14 @@ jobs:
           node --check server.js
           node --check src/app.js
           node --check src/openai-realtime.js
+          node --check src/openai-translation-client.js
           node --check src/room-store.js
           node --check src/storage.js
           node --check src/integrations.js
           node --check public/host.js
           node --check public/host-entry.js
+          node --check public/low-latency-webrtc.js
+          node --check public/translated-relay-worklet.js
           node --check public/quality-bootstrap.js
           node --check public/quality-monitor.js
           node --check public/audience.js

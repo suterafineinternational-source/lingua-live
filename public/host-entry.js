@@ -11,6 +11,12 @@ if (!isIOS) {
   }
 }
 
+try {
+  await import("/low-latency-webrtc.js?v=20260912-1");
+} catch (error) {
+  console.warn("Low-latency WebRTC transport unavailable; server relay fallback remains active:", error?.message || error);
+}
+
 await import("/host.js?v=20260911-4");
 
 if (!qualityLoaded) {
