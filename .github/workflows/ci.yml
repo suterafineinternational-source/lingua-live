@@ -20,6 +20,7 @@ jobs:
       - run: |
           node --check server.js
           node --check src/app.js
+          node --check src/elevenlabs-tts.js
           node --check src/openai-realtime.js
           node --check src/openai-translation-client.js
           node --check src/room-store.js
