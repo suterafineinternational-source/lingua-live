@@ -1,4 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
+import { createNaturalVoiceChain, NATURAL_VOICE_LABEL, scheduleNaturalPcm } from "/natural-voice.js?v=20260915-1";
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
@@ -9,32 +10,23 @@ let socket, reconnectTimer, admissionToken;
 let reconnectAttempt = 0, shouldConnect = true, activeResponse, activeText = "";
 let playedChunks = 0, receivedChunks = 0, lastPlaybackTelemetry = 0, screenFramesReceived = 0;
 
-function decodePcm16Le(base64, context) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  const sampleCount = Math.floor(bytes.byteLength / 2);
-  const buffer = context.createBuffer(1, sampleCount, 24000);
-  const channel = buffer.getChannelData(0);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let i = 0; i < sampleCount; i += 1) channel[i] = view.getInt16(i * 2, true) / 32768;
-  return buffer;
-}
-
 class PcmPlayer {
-  constructor() { this.context = null; this.nextStart = 0; this.pending = []; this.gain = null; this.volume = 1; this.enabled = false; }
+  constructor() {
+    this.context = null;
+    this.nextStart = 0;
+    this.pending = [];
+    this.voice = null;
+    this.volume = 1;
+    this.enabled = false;
+  }
   async enable() {
     if (!window.AudioContext) throw new Error("Web Audio is not supported by this browser.");
     this.context ||= new AudioContext();
-    if (!this.gain) {
-      this.gain = this.context.createGain();
-      this.gain.gain.value = this.volume;
-      this.gain.connect(this.context.destination);
-    }
+    if (!this.voice) this.voice = createNaturalVoiceChain(this.context, this.context.destination, { volume: this.volume });
     await this.context.resume();
     if (this.context.state !== "running") throw new Error("Browser audio output is still suspended. Tap the button again to allow playback.");
     this.enabled = true;
-    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.04);
+    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.055);
     const backlog = this.pending.splice(Math.max(0, this.pending.length - 10));
     this.pending = [];
     for (const chunk of backlog) this.play(chunk);
@@ -46,12 +38,17 @@ class PcmPlayer {
     this.nextStart = this.context?.currentTime || 0;
     reportAudioState();
   }
-  setVolume(value) { this.volume = Number(value); if (this.gain) this.gain.gain.value = this.volume; reportAudioState(); }
+  setVolume(value) {
+    this.volume = Number(value);
+    if (this.voice?.output) this.voice.output.gain.value = this.volume;
+    reportAudioState();
+  }
   enqueue(base64) {
     if (!base64) return;
     receivedChunks += 1;
-    if (!this.context || this.context.state !== "running" || !this.enabled) {
-      this.pending.push(base64); if (this.pending.length > 10) this.pending.shift();
+    if (!this.context || this.context.state !== "running" || !this.enabled || !this.voice) {
+      this.pending.push(base64);
+      if (this.pending.length > 10) this.pending.shift();
       setText(elements.playbackStatus, `English translation available · ${receivedChunks} chunks received · enable audio to hear it`);
       return;
     }
@@ -59,12 +56,12 @@ class PcmPlayer {
   }
   play(base64) {
     try {
-      const buffer = decodePcm16Le(base64, this.context);
-      const source = this.context.createBufferSource(); source.buffer = buffer; source.connect(this.gain);
-      const start = Math.max(this.context.currentTime + 0.025, this.nextStart); source.start(start); this.nextStart = start + buffer.duration;
+      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
+      this.nextStart = scheduled.nextStart;
       playedChunks += 1;
-      setText(elements.playbackStatus, `English audio LIVE · ${playedChunks} chunks played/scheduled · ${receivedChunks} received`);
-      const now = Date.now(); if (now - lastPlaybackTelemetry > 750) { lastPlaybackTelemetry = now; reportPlayback(now); }
+      setText(elements.playbackStatus, `${NATURAL_VOICE_LABEL} · LIVE · ${playedChunks} chunks played/scheduled · ${receivedChunks} received`);
+      const now = Date.now();
+      if (now - lastPlaybackTelemetry > 750) { lastPlaybackTelemetry = now; reportPlayback(now); }
     } catch (error) {
       showError(new Error(`Could not play English audio: ${error.message}`));
       setText(elements.playbackStatus, "English audio playback error");
@@ -131,7 +128,7 @@ elements.enableAudio.addEventListener("click", async () => {
     if (player.enabled) {
       player.disable(); elements.enableAudio.textContent = "Enable English audio"; setText(elements.playbackStatus, `Audio OFF · ${receivedChunks} translated chunks received`); return;
     }
-    await player.enable(); elements.enableAudio.textContent = "Turn English audio OFF"; setText(elements.playbackStatus, `English audio ON · waiting for live translation · ${receivedChunks} chunks already received`); reportAudioState();
+    await player.enable(); elements.enableAudio.textContent = "Turn English audio OFF"; setText(elements.playbackStatus, `${NATURAL_VOICE_LABEL} · waiting for live translation · ${receivedChunks} chunks already received`); reportAudioState();
   } catch (error) { showError(error); }
 });
 elements.volume.addEventListener("input", () => player.setVolume(elements.volume.value));
