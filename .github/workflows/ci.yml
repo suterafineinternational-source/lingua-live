@@ -29,6 +29,7 @@ jobs:
           node --check public/host-entry.js
           node --check public/low-latency-webrtc.js
           node --check public/translated-relay-worklet.js
+          node --check public/natural-voice.js
           node --check public/quality-bootstrap.js
           node --check public/quality-monitor.js
           node --check public/audience.js
