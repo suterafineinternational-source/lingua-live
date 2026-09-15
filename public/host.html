@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css?v=20260915-2">
+    <link rel="stylesheet" href="/styles.css?v=20260915-3">
     <link rel="stylesheet" href="/quality.css?v=20260911-1">
   </head>
   <body>
@@ -18,7 +18,7 @@
       <section class="hero">
         <p class="eyebrow">Realtime interpretation</p>
         <h1>Run a live multilingual webinar.</h1>
-        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive English audio, live captions and your shared webinar screen.</p>
+        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive English audio with the locked Evan voice, live captions and your shared webinar screen.</p>
       </section>
       <p id="error" class="error hidden" role="alert"></p>
 
@@ -94,7 +94,7 @@
               <small id="english-delay-detail">Measured continuously from the live translation stream.</small>
             </div>
           </div>
-          <div class="natural-voice-banner"><strong>English voice output</strong><span>The previous browser voice-processing layer has been removed. Audio playback now uses the translated voice stream directly with a low-latency, browser-safe PCM player.</span></div>
+          <div class="natural-voice-banner"><strong>VOICE: EVAN · ELEVENLABS · LOCKED</strong><span>Voice ID TWutjvRaJqAX89preB4e. No previous OpenAI/browser voice is sent to listeners when Evan mode is active.</span></div>
           <div class="controls">
             <button id="start-room">2. Start interpretation</button>
             <button id="monitor-audio" class="secondary">Monitor English audio</button>
@@ -104,7 +104,7 @@
             <button id="end-room" class="danger">End event</button>
           </div>
           <p id="monitor-status" class="notice">English monitor OFF.</p>
-          <p id="live-recording-status" class="notice">Live recording OFF · records the shared video plus translated English audio locally in this browser.</p>
+          <p id="live-recording-status" class="notice">Live recording OFF · records the shared video plus Evan translated English audio locally in this browser.</p>
           <p class="meta">Recording requires participant consent where applicable. If no screen is being shared, starting the live recording will ask you to choose a screen/window and will share it to the Audience room.</p>
           <p class="meta">Low-latency WebRTC translation is used automatically when supported; Lingua Live falls back to the server relay if the browser cannot establish it.</p>
           <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
@@ -127,7 +127,7 @@
           <p id="quality-output" class="meta">0 English audio chunks · 0 pending segments</p>
           <p id="quality-verdict" class="quality-verdict">Start interpretation to measure realtime performance.</p>
           <div class="controls"><button id="quality-reset" class="secondary" type="button">Reset quality test</button></div>
-          <p class="meta">Technical monitor: it measures speech pace, realtime translation lag, audio backlog and relay loss. It does not automatically judge whether every English sentence sounds native; use “Monitor English audio” for that listening check.</p>
+          <p class="meta">Technical monitor: it measures speech pace, realtime translation lag, audio backlog and relay loss. Use “Monitor English audio” to judge Evan's naturalness and delivery.</p>
         </article>
 
         <article class="card half transcript-card">
@@ -157,6 +157,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host-entry.js?v=20260915-2"></script>
+    <script type="module" src="/host-entry.js?v=20260915-3"></script>
   </body>
 </html>
