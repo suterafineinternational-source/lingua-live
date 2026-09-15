@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { PcmQueuePlayer } from "/pcm-playback.js?v=20260915-2";
+import { PcmQueuePlayer } from "/pcm-playback.js?v=20260915-5";
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
@@ -39,11 +39,22 @@ class AudiencePlayer {
       const before = this.snapshot();
       this.engine.enqueue(base64, sampleRate);
       const after = this.snapshot();
-      if (!after.enabled) this.status("Evan audio received — tap Enable Evan English audio");
-      else this.status("Evan audio LIVE");
+      if (!after.enabled) {
+        this.status("Evan audio received — tap Enable Evan English audio");
+        elements.enableAudio.textContent = "Enable Evan English audio";
+      } else if (after.state !== "running") {
+        this.status("Evan audio received but browser output is suspended — tap Resume Evan audio");
+        elements.enableAudio.textContent = "Resume Evan audio";
+      } else {
+        this.status("Evan audio LIVE");
+        elements.enableAudio.textContent = "Turn Evan audio OFF";
+      }
+      const now = Date.now();
       if (after.scheduledChunks > before.scheduledChunks) {
-        const now = Date.now();
         if (now - lastPlaybackTelemetry > 600) { lastPlaybackTelemetry = now; reportPlayback(now); }
+      } else if (now - lastPlaybackTelemetry > 1000) {
+        lastPlaybackTelemetry = now;
+        reportAudioState();
       }
     } catch (error) {
       showError(new Error(`Could not play Evan audio: ${error.message}`));
@@ -135,8 +146,6 @@ elements.joinRoom.addEventListener("click", async () => {
   clearError();
   elements.joinRoom.disabled = true;
   try {
-    // Browser autoplay policies require this to happen directly inside the user click.
-    // Arm Evan before any network await so the first translated PCM chunk is audible.
     await player.enable();
     elements.enableAudio.textContent = "Turn Evan audio OFF";
     if (!admissionToken) await admit(elements.audiencePin.value);
@@ -152,7 +161,8 @@ elements.joinRoom.addEventListener("click", async () => {
 elements.enableAudio.addEventListener("click", async () => {
   clearError();
   try {
-    if (player.enabled) {
+    const state = player.snapshot();
+    if (player.enabled && state.state === "running") {
       player.disable(); elements.enableAudio.textContent = "Enable Evan English audio"; return;
     }
     await player.enable();
@@ -163,6 +173,10 @@ elements.enableAudio.addEventListener("click", async () => {
   }
 });
 elements.volume.addEventListener("input", () => player.setVolume(elements.volume.value));
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && player.enabled) void player.engine.resumeAndDrain().then(() => player.status("Evan audio LIVE")).catch(() => {});
+});
 
 async function initialize() {
   setText(elements.roomCode, roomCode);
