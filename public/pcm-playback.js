@@ -14,6 +14,11 @@ export function decodePcm16Le(base64, context, sampleRate = 24000) {
   return buffer;
 }
 
+function isAppleMobileBrowser() {
+  const ua = navigator.userAgent || "";
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
 function primeOutput(context) {
   // A tiny non-zero signal is more reliable than a mathematically silent buffer
   // for unlocking the actual media route on iOS/Safari and some mobile Chromium builds.
@@ -38,6 +43,10 @@ export class PcmQueuePlayer {
   constructor({ volume = 1, lookAhead = 0.035, maxPending = 24 } = {}) {
     this.context = null;
     this.gain = null;
+    this.mediaDestination = null;
+    this.audioElement = null;
+    this.outputConnected = false;
+    this.sinkMode = "uninitialized";
     this.nextStart = 0;
     this.enabled = false;
     this.pending = [];
@@ -73,14 +82,17 @@ export class PcmQueuePlayer {
       this.context = new Ctor({ latencyHint: "interactive" });
       this.gain = this.context.createGain();
       this.gain.gain.value = this.volume;
-      this.gain.connect(this.context.destination);
+      this.mediaDestination = null;
+      this.audioElement = null;
+      this.outputConnected = false;
+      this.sinkMode = "uninitialized";
       this.nextStart = 0;
       this.stateListenerAttached = false;
     }
     if (!this.gain) {
       this.gain = this.context.createGain();
       this.gain.gain.value = this.volume;
-      this.gain.connect(this.context.destination);
+      this.outputConnected = false;
     }
     if (!this.stateListenerAttached) {
       this.context.addEventListener?.("statechange", () => {
@@ -91,10 +103,52 @@ export class PcmQueuePlayer {
     return this.context;
   }
 
+  async ensureOutputSink() {
+    if (this.outputConnected) {
+      if (this.audioElement && this.audioElement.paused) {
+        try { await this.audioElement.play(); } catch {}
+      }
+      return;
+    }
+
+    if (isAppleMobileBrowser() && this.context?.createMediaStreamDestination) {
+      try {
+        this.mediaDestination = this.context.createMediaStreamDestination();
+        this.gain.connect(this.mediaDestination);
+        const audio = document.createElement("audio");
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audio.preload = "auto";
+        audio.volume = 1;
+        audio.srcObject = this.mediaDestination.stream;
+        audio.style.display = "none";
+        document.body.append(audio);
+        await audio.play();
+        this.audioElement = audio;
+        this.outputConnected = true;
+        this.sinkMode = "media-element";
+        return;
+      } catch {
+        try { this.gain.disconnect(); } catch {}
+        try { this.audioElement?.remove(); } catch {}
+        this.mediaDestination = null;
+        this.audioElement = null;
+      }
+    }
+
+    this.gain.connect(this.context.destination);
+    this.outputConnected = true;
+    this.sinkMode = "webaudio";
+  }
+
   async resumeAndDrain() {
     if (!this.enabled && !this.context) return this.snapshot();
     await this.ensureContext();
+    await this.ensureOutputSink();
     if (this.context.state === "running") {
+      if (this.audioElement?.paused) {
+        try { await this.audioElement.play(); } catch {}
+      }
       this.drainPending();
       return this.snapshot();
     }
@@ -102,6 +156,7 @@ export class PcmQueuePlayer {
     this.resumePromise = (async () => {
       try {
         await this.context.resume();
+        await this.ensureOutputSink();
         if (this.context.state === "running") {
           primeOutput(this.context);
           this.nextStart = Math.max(this.context.currentTime + this.lookAhead, this.nextStart);
@@ -117,10 +172,10 @@ export class PcmQueuePlayer {
 
   async enable() {
     await this.ensureContext();
-    // Set enabled before the resume so a statechange during the same gesture can drain audio.
     this.enabled = true;
     this.attachGestureResume();
     await unlockAudioContext(this.context);
+    await this.ensureOutputSink();
     this.nextStart = Math.max(this.context.currentTime + this.lookAhead, this.nextStart);
     this.drainPending();
     return this.snapshot();
@@ -143,7 +198,7 @@ export class PcmQueuePlayer {
   enqueue(audio, sampleRate = 24000) {
     if (!audio) return this.snapshot();
     this.receivedChunks += 1;
-    if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain) {
+    if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain || !this.outputConnected) {
       this.pending.push({ audio, sampleRate });
       if (this.pending.length > this.maxPending) this.pending.shift();
       if (this.enabled) void this.resumeAndDrain().catch(() => {});
@@ -154,7 +209,7 @@ export class PcmQueuePlayer {
   }
 
   drainPending() {
-    if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain || !this.pending.length) return this.snapshot();
+    if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain || !this.outputConnected || !this.pending.length) return this.snapshot();
     const backlog = this.pending.splice(Math.max(0, this.pending.length - this.maxPending));
     this.pending = [];
     for (const item of backlog) this.play(item.audio, item.sampleRate);
@@ -162,7 +217,7 @@ export class PcmQueuePlayer {
   }
 
   play(audio, sampleRate = 24000) {
-    if (!this.context || this.context.state !== "running" || !this.gain) {
+    if (!this.context || this.context.state !== "running" || !this.gain || !this.outputConnected) {
       this.pending.push({ audio, sampleRate });
       if (this.pending.length > this.maxPending) this.pending.shift();
       return this.snapshot();
@@ -192,6 +247,7 @@ export class PcmQueuePlayer {
     return {
       enabled: this.enabled,
       state: this.context?.state || "not-created",
+      sinkMode: this.sinkMode,
       volume: this.volume,
       receivedChunks: this.receivedChunks,
       scheduledChunks: this.scheduledChunks,
