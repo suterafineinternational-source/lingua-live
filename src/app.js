@@ -5,6 +5,7 @@ import express from "express";
 import QRCode from "qrcode";
 import WebSocket, { WebSocketServer } from "ws";
 import { AppError, errorPayload } from "./errors.js";
+import { createElevenLabsVoiceFactory } from "./elevenlabs-tts.js";
 import { createIntegrationRegistry } from "./integrations.js";
 import { createOpenAIRealtimeFactory } from "./openai-realtime.js";
 import { createTranslationClientSecret } from "./openai-translation-client.js";
@@ -163,6 +164,15 @@ export function createLinguaServer(options = {}) {
     logger,
   });
   const translationClientSecretFactory = options.translationClientSecretFactory || ((params) => createTranslationClientSecret({ ...params, apiKey }));
+  const elevenLabsVoiceId = options.elevenLabsVoiceId ?? process.env.ELEVENLABS_VOICE_ID;
+  const voiceLocked = Boolean(options.voiceFactory || elevenLabsVoiceId);
+  const voiceFactory = options.voiceFactory || (voiceLocked ? createElevenLabsVoiceFactory({
+    apiKey: options.elevenLabsApiKey ?? process.env.ELEVENLABS_API_KEY,
+    voiceId: elevenLabsVoiceId,
+    modelId: options.elevenLabsModelId ?? process.env.ELEVENLABS_MODEL_ID ?? "eleven_flash_v2_5",
+    outputFormat: "pcm_24000",
+    logger,
+  }) : null);
 
   const app = express();
   app.disable("x-powered-by");
@@ -188,7 +198,7 @@ export function createLinguaServer(options = {}) {
   app.get("/host", (_request, response) => response.sendFile(path.join(publicDirectory, "host.html")));
   app.get("/audience/:code", (_request, response) => response.sendFile(path.join(publicDirectory, "audience.html")));
   app.get("/health", (_request, response) => response.json({ ok: true }));
-  app.get("/ready", (_request, response) => response.json({ ok: true, rooms: rooms.rooms.size }));
+  app.get("/ready", (_request, response) => response.json({ ok: true, rooms: rooms.rooms.size, voice: voiceLocked ? { provider: "elevenlabs", name: "Evan", voiceId: elevenLabsVoiceId } : null }));
   app.get("/api/integrations", (_request, response) => response.json({ integrations: integrations.capabilities() }));
   app.get("/metrics", (_request, response) => {
     let activeRooms = 0, liveRooms = 0, listeners = 0;
@@ -278,6 +288,40 @@ export function createLinguaServer(options = {}) {
   function broadcastRoom(room, payload, options = {}) {
     broadcast(room, payload, { ...options, onBackpressureDrop: () => { metrics.listenerBackpressureDrops += 1; } });
   }
+  async function ensureRoomVoice(room) {
+    if (!voiceLocked) return null;
+    if (room.voice) return room.voice;
+    const voice = voiceFactory({
+      languageCode: String(room.targetLanguage || "en").split("-")[0],
+      onAudio: (audio, meta = {}) => {
+        metrics.audioEvents += 1;
+        if (!room.firstTranslationAudioAt) {
+          room.firstTranslationAudioAt = rooms.now();
+          logger.info?.(`[Lingua] first Evan audio after ${Math.max(0, room.firstTranslationAudioAt - (room.startedAt || room.firstTranslationAudioAt))} ms`);
+        }
+        broadcastRoom(room, {
+          type: "audio.delta",
+          audio,
+          format: "pcm16",
+          sampleRate: 24000,
+          provider: "elevenlabs",
+          voiceName: "Evan",
+          voiceId: meta.voiceId || elevenLabsVoiceId,
+        });
+      },
+      onStatus: (status) => broadcastRoom(room, { type: "voice.status", ...status }),
+    });
+    room.voice = voice;
+    try {
+      await voice.start();
+      broadcastRoom(room, { type: "voice.status", state: "locked", provider: "elevenlabs", voiceName: "Evan", voiceId: elevenLabsVoiceId });
+      return voice;
+    } catch (error) {
+      if (room.voice === voice) room.voice = null;
+      voice.close?.();
+      throw error;
+    }
+  }
   function processTranslationEvent(room, event) {
     if (event.type === "source_transcript.done") {
       metrics.transcriptEvents += 1;
@@ -292,6 +336,7 @@ export function createLinguaServer(options = {}) {
     }
     if (event.type === "transcript.done") {
       metrics.transcriptEvents += 1;
+      room.voice?.finishTurn?.(event.transcript || "");
       const completedEvent = { ...event, at: rooms.now() };
       rooms.addHistory(room, completedEvent);
       const row = rooms.addTranscript(room, { itemId: event.itemId, translation: event.transcript });
@@ -299,13 +344,17 @@ export function createLinguaServer(options = {}) {
       emitSseCaption(room, completedEvent);
     }
     if (event.type === "transcript.delta") {
+      room.voice?.sendDelta?.(event.delta || "");
       emitSseCaption(room, event);
       if (room.transport === "webrtc" && !room.firstTranslationTextAt) {
         room.firstTranslationTextAt = rooms.now();
         logger.info?.(`[Lingua] WebRTC first translated text after ${Math.max(0, room.firstTranslationTextAt - (room.startedAt || room.firstTranslationTextAt))} ms`);
       }
     }
-    if (event.type === "audio.delta") metrics.audioEvents += 1;
+    if (event.type === "audio.delta") {
+      if (voiceLocked) return;
+      metrics.audioEvents += 1;
+    }
     if (event.type === "service.error") metrics.upstreamErrors += 1;
     broadcastRoom(room, event);
   }
@@ -318,17 +367,18 @@ export function createLinguaServer(options = {}) {
     const operation = (async () => {
       let realtime;
       try {
+        await ensureRoomVoice(room);
         realtime = realtimeFactory({
           roomCode: room.code, glossary: room.glossary, sourceLanguage: room.sourceLanguage, targetLanguage: room.targetLanguage,
           onEvent: (event) => processTranslationEvent(room, event),
-          onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status }),
+          onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status, voiceProvider: voiceLocked ? "elevenlabs" : undefined, voiceName: voiceLocked ? "Evan" : undefined }),
         });
         room.transport = "server-websocket";
         room.realtime = realtime; await realtime.start();
         if (room.status === "ended") { if (room.realtime === realtime) { realtime.close?.(); room.realtime = null; } return; }
         room.status = "live"; room.startedAt ||= rooms.now(); metrics.roomsStarted += 1; await storage.saveEvent(rooms.hostView(room)); broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
       } catch (error) {
-        metrics.upstreamErrors += 1; realtime?.close?.(); if (room.realtime === realtime) room.realtime = null; if (room.status !== "ended") room.status = "created"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); throw error;
+        metrics.upstreamErrors += 1; realtime?.close?.(); if (room.realtime === realtime) room.realtime = null; room.voice?.close?.(); room.voice = null; if (room.status !== "ended") room.status = "created"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); throw error;
       }
     })();
     room.startPromise = operation; operation.finally(() => { if (room.startPromise === operation) room.startPromise = null; }).catch(() => {}); return operation;
@@ -359,6 +409,7 @@ export function createLinguaServer(options = {}) {
       const room = rooms.get(request.params.code);
       rooms.authenticate(room, bearerToken(request));
       if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
+      await ensureRoomVoice(room);
       if (room.status !== "live") {
         room.realtime?.close?.();
         room.realtime = null;
@@ -374,18 +425,21 @@ export function createLinguaServer(options = {}) {
       broadcastRoom(room, {
         type: "service.status",
         state: "connected",
-        message: "Low-latency browser WebRTC translation connected.",
+        message: voiceLocked ? "Low-latency WebRTC translation connected · Evan voice locked through ElevenLabs." : "Low-latency browser WebRTC translation connected.",
         engineMode: "translate",
         engineModel: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-translate",
         transport: "webrtc",
+        voiceProvider: voiceLocked ? "elevenlabs" : undefined,
+        voiceName: voiceLocked ? "Evan" : undefined,
+        voiceId: voiceLocked ? elevenLabsVoiceId : undefined,
       });
-      response.json({ room: rooms.hostView(room), transport: "webrtc" });
+      response.json({ room: rooms.hostView(room), transport: "webrtc", voice: voiceLocked ? { provider: "elevenlabs", name: "Evan", voiceId: elevenLabsVoiceId } : null });
     } catch (error) { next(error); }
   });
 
   function endRoom(room) {
     if (room.status === "ended") return;
-    room.status = "ended"; room.endedAt = rooms.now(); metrics.roomsEnded += 1; clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; room.realtime?.close?.(); room.realtime = null; room.transport = null;
+    room.status = "ended"; room.endedAt = rooms.now(); metrics.roomsEnded += 1; clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; room.realtime?.close?.(); room.realtime = null; room.voice?.close?.(); room.voice = null; room.transport = null;
     storage.saveEvent(rooms.hostView(room)).catch((error) => logger.error("storage save failed", error?.message)); broadcastRoom(room, { type: "room.ended", room: rooms.publicView(room) });
     for (const response of room.sseClients || []) { try { sseSend(response, "ended", { room: rooms.publicView(room) }); response.end(); } catch {} }
     room.sseClients?.clear(); for (const client of room.clients.values()) client.ws.close(1000, "Room ended"); room.clients.clear();
@@ -412,7 +466,7 @@ export function createLinguaServer(options = {}) {
     const client = { ws, role, clientId, backpressureNotified: false, audioEnabled: false, playedChunks: 0, volume: 1, lastPlaybackAt: null };
     room.clients.set(key, client);
     if (role === "host") { clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; }
-    sendJson(ws, { type: "session.ready", role, room: role === "host" ? rooms.hostView(room) : rooms.publicView(room), history: role === "audience" ? room.history : undefined, transcript: role === "host" ? rooms.transcriptView(room) : undefined, audio: { format: "pcm16", sampleRate: 24000, channels: 1 } });
+    sendJson(ws, { type: "session.ready", role, room: role === "host" ? rooms.hostView(room) : rooms.publicView(room), history: role === "audience" ? room.history : undefined, transcript: role === "host" ? rooms.transcriptView(room) : undefined, audio: { format: "pcm16", sampleRate: 24000, channels: 1, provider: voiceLocked ? "elevenlabs" : "openai", voiceName: voiceLocked ? "Evan" : undefined, voiceId: voiceLocked ? elevenLabsVoiceId : undefined } });
     broadcastRoom(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
 
     ws.on("message", (data) => {
@@ -441,6 +495,7 @@ export function createLinguaServer(options = {}) {
           return;
         }
         if (message.type === "translation.audio") {
+          if (voiceLocked) return;
           if (room.status !== "live" || room.transport !== "webrtc") throw new AppError(409, "ROOM_NOT_LIVE", "Low-latency interpretation is not active.", { retriable: true });
           const audio = validateRelayedAudio(message.audio);
           metrics.audioEvents += 1;
@@ -468,7 +523,7 @@ export function createLinguaServer(options = {}) {
         broadcastRoom(room, { type: "presence", listenerCount: rooms.listenerCount(room) });
         broadcastRoom(room, { type: "listener.status", clientId, disconnected: true }, { hostOnly: true });
       } else if ((room.status === "live" || room.status === "starting") && !room.hostGraceTimer) {
-        room.hostGraceTimer = setTimeout(() => { room.hostGraceTimer = null; const hasHost = [...room.clients.values()].some((connected) => connected.role === "host"); if (hasHost || room.status === "ended") return; room.realtime?.close?.(); room.realtime = null; room.transport = null; room.status = "paused"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); }, hostReconnectGraceMs);
+        room.hostGraceTimer = setTimeout(() => { room.hostGraceTimer = null; const hasHost = [...room.clients.values()].some((connected) => connected.role === "host"); if (hasHost || room.status === "ended") return; room.realtime?.close?.(); room.realtime = null; room.voice?.close?.(); room.voice = null; room.transport = null; room.status = "paused"; broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) }); }, hostReconnectGraceMs);
         room.hostGraceTimer.unref?.();
       }
     });
