@@ -22,9 +22,11 @@ test("rooms have no application-level participant cap", () => {
 test("Host and Audience use the browser-safe PCM translation player", () => {
   assert.match(pcmPlaybackSource, /window\.AudioContext \|\| window\.webkitAudioContext/);
   assert.match(pcmPlaybackSource, /await context\.resume\(\)/);
-  assert.match(pcmPlaybackSource, /one-sample silent buffer/);
+  assert.match(pcmPlaybackSource, /primeOutput/);
   assert.match(pcmPlaybackSource, /class PcmQueuePlayer/);
   assert.match(pcmPlaybackSource, /latencyHint: "interactive"/);
+  assert.match(pcmPlaybackSource, /createMediaStreamDestination/);
+  assert.match(pcmPlaybackSource, /resumeAndDrain/);
   assert.match(hostSource, /PcmQueuePlayer/);
   assert.match(audienceSource, /PcmQueuePlayer/);
   assert.doesNotMatch(hostSource, /createNaturalVoiceChain/);
