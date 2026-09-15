@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { createNaturalVoiceChain, NATURAL_VOICE_LABEL, scheduleNaturalPcm } from "/natural-voice.js?v=20260915-1";
+import { audioContextConstructor, decodePcm16Le, PcmQueuePlayer, unlockAudioContext } from "/pcm-playback.js?v=20260915-2";
 
 const el = Object.fromEntries([
   "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","monitor-status","share-screen","listener-statuses","host-screen-preview","screen-share-status","record-live","download-live-recording","live-recording-status"
@@ -16,67 +16,41 @@ let screenStream, screenVideo, screenCanvas, screenTimer;
 let screenFramesSent = 0;
 const listenerStatuses = new Map();
 
-class PcmMonitor {
+class HostAudioMonitor {
   constructor() {
-    this.context = null;
-    this.voice = null;
-    this.nextStart = 0;
-    this.enabled = false;
-    this.pending = [];
-    this.receivedChunks = 0;
-    this.scheduledChunks = 0;
+    this.player = new PcmQueuePlayer({ volume: 1, lookAhead: 0.03, maxPending: 30 });
   }
+  get enabled() { return this.player.enabled; }
   status(text) { if (el.monitor_status) setText(el.monitor_status, text); }
+  describe(prefix = "English monitor") {
+    const state = this.player.snapshot();
+    this.status(`${prefix} · audio context ${state.state} · ${state.receivedChunks} chunks received · ${state.scheduledChunks} played/scheduled · queue ${state.queuedSeconds.toFixed(2)} s`);
+  }
   async enable() {
-    if (!window.AudioContext) throw new Error("Web Audio is not supported by this browser.");
-    this.context ||= new AudioContext();
-    if (!this.voice) this.voice = createNaturalVoiceChain(this.context, this.context.destination, { volume: 1 });
-    await this.context.resume();
-    if (this.context.state !== "running") throw new Error("Browser audio output is still suspended. Click the button again and allow audio playback.");
-    this.enabled = true;
-    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.055);
-    const backlog = this.pending.splice(Math.max(0, this.pending.length - 10));
-    this.pending = [];
-    for (const chunk of backlog) this.play(chunk);
-    this.status(`${NATURAL_VOICE_LABEL} · monitor ON · ${this.receivedChunks} translated chunks received · ${this.scheduledChunks} scheduled`);
+    await this.player.enable();
+    this.describe("English monitor ON");
   }
   disable() {
-    this.enabled = false;
-    this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
-    this.status(`English monitor OFF · ${this.receivedChunks} translated chunks received this session`);
+    this.player.disable();
+    this.describe("English monitor OFF");
   }
-  enqueue(base64) {
-    if (!base64) return;
-    this.receivedChunks += 1;
-    if (!this.enabled || !this.context || this.context.state !== "running" || !this.voice) {
-      this.pending.push(base64);
-      if (this.pending.length > 10) this.pending.shift();
-      this.status(`English translation audio available · ${this.receivedChunks} chunks received · click “Monitor English audio” to hear it`);
-      return;
-    }
-    this.play(base64);
-  }
-  play(base64) {
+  enqueue(base64, sampleRate = 24000) {
     try {
-      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
-      this.nextStart = scheduled.nextStart;
-      this.scheduledChunks += 1;
-      this.status(`${NATURAL_VOICE_LABEL} · monitor ON · ${this.receivedChunks} chunks received · ${this.scheduledChunks} played/scheduled`);
+      const before = this.player.snapshot();
+      this.player.enqueue(base64, sampleRate);
+      if (!before.enabled) this.describe("English audio available — click Monitor English audio");
+      else this.describe("English monitor ON");
     } catch (error) {
       this.status(`English monitor error: ${error.message}`);
       showError(new Error(`Could not play translated English audio: ${error.message}`));
     }
   }
   reset() {
-    this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
-    this.receivedChunks = 0;
-    this.scheduledChunks = 0;
+    this.player.reset();
     this.status("English monitor OFF.");
   }
 }
-const monitor = new PcmMonitor();
+const monitor = new HostAudioMonitor();
 
 function preferredVideoMimeType() {
   if (!window.MediaRecorder) return "";
@@ -96,7 +70,7 @@ class LiveProgramRecorder {
     this.blob = null;
     this.context = null;
     this.destination = null;
-    this.voice = null;
+    this.gain = null;
     this.nextStart = 0;
     this.stream = null;
     this.mimeType = "";
@@ -108,18 +82,21 @@ class LiveProgramRecorder {
     if (!window.MediaRecorder) throw new Error("Video recording is not supported by this browser.");
     const videoTrack = videoStream?.getVideoTracks?.()[0];
     if (!videoTrack || videoTrack.readyState === "ended") throw new Error("A live screen/video track is required before recording can start.");
-    if (!window.AudioContext) throw new Error("Web Audio is required to record the translated English audio.");
+    const AudioCtor = audioContextConstructor();
+    if (!AudioCtor) throw new Error("Web Audio is required to record the translated English audio.");
 
     this.chunks = [];
     this.blob = null;
     this.mimeType = preferredVideoMimeType();
     if (el.download_live_recording) el.download_live_recording.classList.add("hidden");
 
-    this.context = new AudioContext();
+    this.context = new AudioCtor({ latencyHint: "interactive" });
     this.destination = this.context.createMediaStreamDestination();
-    this.voice = createNaturalVoiceChain(this.context, this.destination, { volume: 1 });
-    await this.context.resume();
-    this.nextStart = this.context.currentTime + 0.055;
+    this.gain = this.context.createGain();
+    this.gain.gain.value = 1;
+    this.gain.connect(this.destination);
+    await unlockAudioContext(this.context);
+    this.nextStart = this.context.currentTime + 0.03;
 
     const recordedVideoTrack = videoTrack.clone();
     const programAudioTracks = this.destination.stream.getAudioTracks();
@@ -135,13 +112,18 @@ class LiveProgramRecorder {
     this.recorder.addEventListener("stop", () => this.finalize(), { once: true });
     recordedVideoTrack.addEventListener("ended", () => { if (this.active) void stopLiveProgramRecording(); }, { once: true });
     this.recorder.start(1000);
-    this.status("RECORDING LIVE · shared video + Natural Voice English audio · stored locally in this browser");
+    this.status("RECORDING LIVE · shared video + translated English audio · stored locally in this browser");
   }
-  enqueue(base64) {
-    if (!this.active || !this.context || this.context.state !== "running" || !this.voice || !base64) return;
+  enqueue(base64, sampleRate = 24000) {
+    if (!this.active || !this.context || this.context.state !== "running" || !this.gain || !base64) return;
     try {
-      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
-      this.nextStart = scheduled.nextStart;
+      const buffer = decodePcm16Le(base64, this.context, sampleRate);
+      const source = this.context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.gain);
+      const start = Math.max(this.context.currentTime + 0.03, this.nextStart);
+      source.start(start);
+      this.nextStart = start + buffer.duration;
     } catch (error) {
       this.status(`Recording audio warning: ${error.message}`);
     }
@@ -168,7 +150,7 @@ class LiveProgramRecorder {
     if (this.context && this.context.state !== "closed") void this.context.close();
     this.context = null;
     this.destination = null;
-    this.voice = null;
+    this.gain = null;
     this.nextStart = 0;
     const resolve = this.stopResolve;
     this.stopResolve = null;
@@ -210,7 +192,7 @@ function renderListenerStatuses() {
   for (const [id, status] of rows) {
     const p = document.createElement("p"); p.className = "transcript-line";
     if (status.disconnected) p.textContent = `${id.slice(-6)} · disconnected`;
-    else p.textContent = `${id.slice(-6)} · audio ${status.audioEnabled ? "ON" : "OFF"} · ${status.playedChunks || 0} translated chunks played · volume ${Math.round((status.volume ?? 1) * 100)}%${status.lastPlaybackAt ? ` · last ${new Date(status.lastPlaybackAt).toLocaleTimeString()}` : ""}`;
+    else p.textContent = `${id.slice(-6)} · audio ${status.audioEnabled ? "ON" : "OFF"} · context ${status.audioContextState || "unknown"} · ${status.receivedChunks || 0} received · ${status.playedChunks || 0} played · volume ${Math.round((status.volume ?? 1) * 100)}%${status.lastPlaybackAt ? ` · last ${new Date(status.lastPlaybackAt).toLocaleTimeString()}` : ""}`;
     el.listener_statuses.append(p);
   }
 }
@@ -251,7 +233,7 @@ function connectSocket() {
     if (event.type === "source_transcript.done") { appendLine(el.source_transcript, event.transcript || sourceCurrent); sourceCurrent = ""; engineStatus = "Source speech transcribed"; renderLiveDiagnostic(); }
     if (event.type === "transcript.delta") { targetCurrent += event.delta || ""; if (targetCurrent) setText(el.service_status, `TRANSLATING: ${targetCurrent.slice(-120)}`); }
     if (event.type === "transcript.done") { appendLine(el.translated_transcript, event.transcript || targetCurrent); targetCurrent = ""; engineStatus = "Translation received"; renderLiveDiagnostic(); }
-    if (event.type === "audio.delta") { monitor.enqueue(event.audio); liveProgramRecorder.enqueue(event.audio); }
+    if (event.type === "audio.delta") { monitor.enqueue(event.audio, event.sampleRate || 24000); liveProgramRecorder.enqueue(event.audio, event.sampleRate || 24000); }
     if (event.type === "listener.status") { listenerStatuses.set(event.clientId, event); renderListenerStatuses(); }
   });
   socket.addEventListener("close", (event) => {
@@ -382,7 +364,11 @@ async function startCapture() {
     throw error;
   }
   audioChunkCount = 0; nonSilentChunkCount = 0; lastPeak = 0; beginSourceRecording();
-  audioContext = new AudioContext(); await audioContext.audioWorklet.addModule("/pcm-worklet.js"); await audioContext.resume();
+  const AudioCtor = audioContextConstructor();
+  if (!AudioCtor) throw new Error("Web Audio is not supported by this browser.");
+  audioContext = new AudioCtor({ latencyHint: "interactive" });
+  await audioContext.audioWorklet.addModule("/pcm-worklet.js");
+  await unlockAudioContext(audioContext);
   const source = audioContext.createMediaStreamSource(mediaStream); captureNode = new AudioWorkletNode(audioContext, "pcm-capture"); const silent = audioContext.createGain(); silent.gain.value = 0; source.connect(captureNode).connect(silent).connect(audioContext.destination);
   captureNode.port.onmessage = ({ data }) => {
     audioChunkCount += 1; lastPeak = peakPercent(data); if (lastPeak > 2) nonSilentChunkCount += 1;
@@ -411,7 +397,7 @@ el.start_room.addEventListener("click", async () => {
   clearError(); el.start_room.disabled = true; engineStatus = "Requesting audio source…"; renderLiveDiagnostic();
   try {
     await startCapture(); engineStatus = "Connecting translation engine…"; renderLiveDiagnostic();
-    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = `${NATURAL_VOICE_LABEL} · English interpretation connected; listening for speech`; renderLiveDiagnostic();
+    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = "English interpretation connected; translated audio stream ready"; renderLiveDiagnostic();
   } catch (error) { showError(error); engineStatus = error?.message || "Could not start interpretation"; renderLiveDiagnostic(); el.start_room.disabled = false; stopCapture(); }
 });
 

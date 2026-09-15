@@ -6,7 +6,7 @@ import { RoomStore } from "../src/room-store.js";
 const hostHtml = readFileSync(new URL("../public/host.html", import.meta.url), "utf8");
 const hostSource = readFileSync(new URL("../public/host.js", import.meta.url), "utf8");
 const audienceSource = readFileSync(new URL("../public/audience.js", import.meta.url), "utf8");
-const naturalVoiceSource = readFileSync(new URL("../public/natural-voice.js", import.meta.url), "utf8");
+const pcmPlaybackSource = readFileSync(new URL("../public/pcm-playback.js", import.meta.url), "utf8");
 
 test("rooms have no application-level participant cap", () => {
   const store = new RoomStore();
@@ -19,13 +19,24 @@ test("rooms have no application-level participant cap", () => {
   assert.equal(store.publicView(room).participantPolicy, "uncapped");
 });
 
-test("Natural Voice rendering is used by Host and Audience playback", () => {
-  assert.match(naturalVoiceSource, /createDynamicsCompressor/);
-  assert.match(naturalVoiceSource, /type = "lowshelf"/);
-  assert.match(naturalVoiceSource, /lookAhead = 0\.055/);
-  assert.match(hostSource, /createNaturalVoiceChain/);
-  assert.match(audienceSource, /createNaturalVoiceChain/);
-  assert.match(hostSource, /autoGainControl: false/);
+test("Host and Audience use the browser-safe PCM translation player", () => {
+  assert.match(pcmPlaybackSource, /window\.AudioContext \|\| window\.webkitAudioContext/);
+  assert.match(pcmPlaybackSource, /await context\.resume\(\)/);
+  assert.match(pcmPlaybackSource, /one-sample silent buffer/);
+  assert.match(pcmPlaybackSource, /class PcmQueuePlayer/);
+  assert.match(pcmPlaybackSource, /latencyHint: "interactive"/);
+  assert.match(hostSource, /PcmQueuePlayer/);
+  assert.match(audienceSource, /PcmQueuePlayer/);
+  assert.doesNotMatch(hostSource, /createNaturalVoiceChain/);
+  assert.doesNotMatch(audienceSource, /createNaturalVoiceChain/);
+});
+
+test("Audience reports enough playback telemetry to diagnose captions-only failures", () => {
+  assert.match(audienceSource, /audioContextState/);
+  assert.match(audienceSource, /receivedChunks/);
+  assert.match(audienceSource, /playedChunks/);
+  assert.match(audienceSource, /queuedSeconds/);
+  assert.match(hostSource, /context \$\{status\.audioContextState/);
 });
 
 test("Host can record the shared live video with translated English audio", () => {
@@ -35,6 +46,6 @@ test("Host can record the shared live video with translated English audio", () =
   assert.match(hostSource, /class LiveProgramRecorder/);
   assert.match(hostSource, /createMediaStreamDestination/);
   assert.match(hostSource, /new MediaStream\(\[recordedVideoTrack, \.\.\.programAudioTracks\]\)/);
-  assert.match(hostSource, /liveProgramRecorder\.enqueue\(event\.audio\)/);
+  assert.match(hostSource, /liveProgramRecorder\.enqueue\(event\.audio/);
   assert.match(hostSource, /new MediaRecorder\(this\.stream/);
 });

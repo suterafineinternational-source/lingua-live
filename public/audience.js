@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { createNaturalVoiceChain, NATURAL_VOICE_LABEL, scheduleNaturalPcm } from "/natural-voice.js?v=20260915-1";
+import { PcmQueuePlayer } from "/pcm-playback.js?v=20260915-2";
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
@@ -8,75 +8,73 @@ const elements = {
 
 let socket, reconnectTimer, admissionToken;
 let reconnectAttempt = 0, shouldConnect = true, activeResponse, activeText = "";
-let playedChunks = 0, receivedChunks = 0, lastPlaybackTelemetry = 0, screenFramesReceived = 0;
+let lastPlaybackTelemetry = 0, screenFramesReceived = 0;
 
-class PcmPlayer {
-  constructor() {
-    this.context = null;
-    this.nextStart = 0;
-    this.pending = [];
-    this.voice = null;
-    this.volume = 1;
-    this.enabled = false;
+class AudiencePlayer {
+  constructor() { this.engine = new PcmQueuePlayer({ volume: 1, lookAhead: 0.03, maxPending: 30 }); }
+  get enabled() { return this.engine.enabled; }
+  get volume() { return this.engine.volume; }
+  snapshot() { return this.engine.snapshot(); }
+  status(prefix) {
+    const state = this.snapshot();
+    setText(elements.playbackStatus, `${prefix} · context ${state.state} · ${state.receivedChunks} received · ${state.scheduledChunks} played/scheduled · queue ${state.queuedSeconds.toFixed(2)} s`);
   }
   async enable() {
-    if (!window.AudioContext) throw new Error("Web Audio is not supported by this browser.");
-    this.context ||= new AudioContext();
-    if (!this.voice) this.voice = createNaturalVoiceChain(this.context, this.context.destination, { volume: this.volume });
-    await this.context.resume();
-    if (this.context.state !== "running") throw new Error("Browser audio output is still suspended. Tap the button again to allow playback.");
-    this.enabled = true;
-    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.055);
-    const backlog = this.pending.splice(Math.max(0, this.pending.length - 10));
-    this.pending = [];
-    for (const chunk of backlog) this.play(chunk);
+    await this.engine.enable();
+    this.status("English audio ON");
     reportAudioState();
   }
   disable() {
-    this.enabled = false;
-    this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
+    this.engine.disable();
+    this.status("English audio OFF");
     reportAudioState();
   }
   setVolume(value) {
-    this.volume = Number(value);
-    if (this.voice?.output) this.voice.output.gain.value = this.volume;
+    this.engine.setVolume(value);
+    this.status(this.enabled ? "English audio LIVE" : "English audio OFF");
     reportAudioState();
   }
-  enqueue(base64) {
-    if (!base64) return;
-    receivedChunks += 1;
-    if (!this.context || this.context.state !== "running" || !this.enabled || !this.voice) {
-      this.pending.push(base64);
-      if (this.pending.length > 10) this.pending.shift();
-      setText(elements.playbackStatus, `English translation available · ${receivedChunks} chunks received · enable audio to hear it`);
-      return;
-    }
-    this.play(base64);
-  }
-  play(base64) {
+  enqueue(base64, sampleRate = 24000) {
     try {
-      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
-      this.nextStart = scheduled.nextStart;
-      playedChunks += 1;
-      setText(elements.playbackStatus, `${NATURAL_VOICE_LABEL} · LIVE · ${playedChunks} chunks played/scheduled · ${receivedChunks} received`);
-      const now = Date.now();
-      if (now - lastPlaybackTelemetry > 750) { lastPlaybackTelemetry = now; reportPlayback(now); }
+      const before = this.snapshot();
+      this.engine.enqueue(base64, sampleRate);
+      const after = this.snapshot();
+      if (!after.enabled) this.status("English voice ready — tap Enable English audio");
+      else this.status("English audio LIVE");
+      if (after.scheduledChunks > before.scheduledChunks) {
+        const now = Date.now();
+        if (now - lastPlaybackTelemetry > 600) { lastPlaybackTelemetry = now; reportPlayback(now); }
+      }
     } catch (error) {
       showError(new Error(`Could not play English audio: ${error.message}`));
-      setText(elements.playbackStatus, "English audio playback error");
+      setText(elements.playbackStatus, `English audio playback error · ${error.message}`);
+      reportAudioState();
     }
   }
-  reset() { this.pending = []; this.nextStart = this.context?.currentTime || 0; }
+  reset() { this.engine.reset(); }
 }
-const player = new PcmPlayer();
+const player = new AudiencePlayer();
 
 function showError(error) { elements.error.textContent = error?.message || "Something went wrong."; elements.error.classList.remove("hidden"); }
 function clearError() { elements.error.classList.add("hidden"); elements.error.textContent = ""; }
 function addCaption(text) { if (!text?.trim()) return; const p = document.createElement("p"); p.className = "caption"; p.textContent = text.trim(); elements.history.append(p); while (elements.history.children.length > 6) elements.history.firstElementChild.remove(); }
 function sendTelemetry(payload) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload)); }
-function reportAudioState() { sendTelemetry({ type: "listener.audio_state", enabled: player.enabled, volume: player.volume, playedChunks, lastPlaybackAt: playedChunks ? Date.now() : null }); }
-function reportPlayback(now = Date.now()) { sendTelemetry({ type: "listener.playback", enabled: player.enabled, volume: player.volume, playedChunks, lastPlaybackAt: now }); }
+function playbackPayload(type, now = null) {
+  const state = player.snapshot();
+  return {
+    type,
+    enabled: state.enabled,
+    volume: state.volume,
+    playedChunks: state.scheduledChunks,
+    receivedChunks: state.receivedChunks,
+    pendingChunks: state.pendingChunks,
+    queuedSeconds: Number(state.queuedSeconds.toFixed(3)),
+    audioContextState: state.state,
+    lastPlaybackAt: now || state.lastScheduledAt || null,
+  };
+}
+function reportAudioState() { sendTelemetry(playbackPayload("listener.audio_state")); }
+function reportPlayback(now = Date.now()) { sendTelemetry(playbackPayload("listener.playback", now)); }
 
 function updateRoom(room) {
   const live = room.status === "live"; elements.pulse.classList.toggle("live", live);
@@ -103,7 +101,7 @@ function handleEvent(event) {
   if (event.type === "speaker.status") elements.pulse.classList.toggle("live", event.speaking);
   if (event.type === "transcript.delta") { if (activeResponse && activeResponse !== event.responseId) addCaption(activeText); if (activeResponse !== event.responseId) activeText = ""; activeResponse = event.responseId; activeText += event.delta || ""; elements.current.textContent = activeText || "Listening…"; }
   if (event.type === "transcript.done") { const finalText = event.transcript || activeText; addCaption(finalText); activeResponse = null; activeText = ""; elements.current.textContent = "Listening…"; }
-  if (event.type === "audio.delta") player.enqueue(event.audio);
+  if (event.type === "audio.delta") player.enqueue(event.audio, event.sampleRate || 24000);
   if (event.type === "screen.frame") showScreenFrame(event);
   if (event.type === "service.status") setText(elements.connection, event.message);
   if (event.type === "service.error" || event.type === "client.error") showError(event.error);
@@ -124,12 +122,17 @@ async function admit(pin) {
 
 elements.joinRoom.addEventListener("click", async () => { try { elements.joinRoom.disabled = true; await admit(elements.audiencePin.value); } catch (error) { showError(error); elements.joinRoom.disabled = false; } });
 elements.enableAudio.addEventListener("click", async () => {
+  clearError();
   try {
     if (player.enabled) {
-      player.disable(); elements.enableAudio.textContent = "Enable English audio"; setText(elements.playbackStatus, `Audio OFF · ${receivedChunks} translated chunks received`); return;
+      player.disable(); elements.enableAudio.textContent = "Enable English audio"; return;
     }
-    await player.enable(); elements.enableAudio.textContent = "Turn English audio OFF"; setText(elements.playbackStatus, `${NATURAL_VOICE_LABEL} · waiting for live translation · ${receivedChunks} chunks already received`); reportAudioState();
-  } catch (error) { showError(error); }
+    await player.enable();
+    elements.enableAudio.textContent = "Turn English audio OFF";
+  } catch (error) {
+    showError(new Error(`Could not enable English audio: ${error.message}`));
+    setText(elements.playbackStatus, `Audio blocked by browser · ${error.message}`);
+  }
 });
 elements.volume.addEventListener("input", () => player.setVolume(elements.volume.value));
 
