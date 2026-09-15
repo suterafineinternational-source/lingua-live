@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css?v=20260915-1">
+    <link rel="stylesheet" href="/styles.css?v=20260915-2">
     <link rel="stylesheet" href="/quality.css?v=20260911-1">
   </head>
   <body>
@@ -18,7 +18,7 @@
       <section class="hero">
         <p class="eyebrow">Realtime interpretation</p>
         <h1>Run a live multilingual webinar.</h1>
-        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive Natural Voice English audio, live captions and your shared webinar screen.</p>
+        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive English audio, live captions and your shared webinar screen.</p>
       </section>
       <p id="error" class="error hidden" role="alert"></p>
 
@@ -94,7 +94,7 @@
               <small id="english-delay-detail">Measured continuously from the live translation stream.</small>
             </div>
           </div>
-          <div class="natural-voice-banner"><strong>Natural Voice rendering: ON</strong><span>Dynamic source prosody from Realtime Translation plus smooth buffered playback and light voice mastering.</span></div>
+          <div class="natural-voice-banner"><strong>English voice output</strong><span>The previous browser voice-processing layer has been removed. Audio playback now uses the translated voice stream directly with a low-latency, browser-safe PCM player.</span></div>
           <div class="controls">
             <button id="start-room">2. Start interpretation</button>
             <button id="monitor-audio" class="secondary">Monitor English audio</button>
@@ -157,6 +157,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host-entry.js?v=20260915-1"></script>
+    <script type="module" src="/host-entry.js?v=20260915-2"></script>
   </body>
 </html>
