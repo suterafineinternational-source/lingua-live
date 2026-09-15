@@ -268,10 +268,18 @@ function beginSourceRecording() {
   if (!el.record_source.checked || !mediaStream || !window.MediaRecorder) return;
   const audioOnly = new MediaStream(mediaStream.getAudioTracks()); if (!audioOnly.getAudioTracks().length) return;
   try {
-    sourceRecorder = new MediaRecorder(audioOnly);
-    sourceRecorder.addEventListener("dataavailable", (event) => { if (event.data?.size) sourceRecordingChunks.push(event.data); });
-    sourceRecorder.addEventListener("stop", () => { if (!sourceRecordingChunks.length) return; sourceRecordingBlob = new Blob(sourceRecordingChunks, { type: sourceRecorder.mimeType || "audio/webm" }); el.download_recording.classList.remove("hidden"); });
-    sourceRecorder.start(1000);
+    const recorder = new MediaRecorder(audioOnly);
+    const recordingType = recorder.mimeType || "audio/webm";
+    sourceRecorder = recorder;
+    recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) sourceRecordingChunks.push(event.data); });
+    recorder.addEventListener("stop", () => {
+      if (sourceRecordingChunks.length) {
+        sourceRecordingBlob = new Blob(sourceRecordingChunks, { type: recordingType });
+        el.download_recording.classList.remove("hidden");
+      }
+      if (sourceRecorder === recorder) sourceRecorder = null;
+    });
+    recorder.start(1000);
   } catch (error) { sourceRecorder = null; showError(new Error(`Local source recording could not start: ${error.message}`)); }
 }
 
@@ -385,7 +393,9 @@ async function startCapture() {
   renderLiveDiagnostic();
 }
 function stopCapture() {
-  if (sourceRecorder?.state === "recording") sourceRecorder.stop(); sourceRecorder = null; captureNode?.disconnect(); captureNode = null;
+  const recorder = sourceRecorder;
+  if (recorder?.state === "recording") recorder.stop();
+  captureNode?.disconnect(); captureNode = null;
   if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop()); mediaStream = null; audioContext?.close(); audioContext = null;
 }
 
