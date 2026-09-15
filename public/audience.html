@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Watch and listen to a live interpreted webinar with Lingua Live.">
     <title>Audience · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css?v=20260915-3">
+    <link rel="stylesheet" href="/styles.css?v=20260915-4">
   </head>
   <body>
     <main class="shell audience-shell">
@@ -23,12 +23,13 @@
 
       <p id="error" class="error hidden" role="alert"></p>
       <section id="pin-panel" class="card pin-card hidden">
-        <h2>Enter audience PIN</h2>
-        <p class="meta">This event is protected by a PIN from the host.</p>
-        <div class="controls"><input id="audience-pin" inputmode="numeric" maxlength="8" placeholder="PIN"><button id="join-room">Join event</button></div>
+        <h2 id="join-title">Join live event</h2>
+        <p id="join-help" class="meta">Tap the button below to unlock Evan audio in your browser before entering the live room.</p>
+        <div id="pin-input-wrap" class="controls hidden"><input id="audience-pin" inputmode="numeric" maxlength="8" placeholder="PIN"></div>
+        <div class="controls"><button id="join-room" type="button">Join event with Evan audio</button></div>
       </section>
 
-      <section class="webinar-stage">
+      <section id="webinar-stage" class="webinar-stage hidden">
         <div class="webinar-screen-card">
           <img id="shared-screen" class="shared-screen hidden" alt="Live webinar screen shared by host">
           <div id="screen-placeholder" class="screen-placeholder">The host has not shared a screen yet.</div>
@@ -40,15 +41,15 @@
         </section>
       </section>
 
-      <footer class="listener-bar">
+      <footer id="listener-bar" class="listener-bar hidden">
         <div><span id="live-pulse" class="pulse"></span><strong id="connection-status">Connecting…</strong><span class="meta"> · <span id="listener-count">0</span> listening</span></div>
         <div class="audio-controls">
-          <button id="enable-audio" type="button">Enable Evan English audio</button>
+          <button id="enable-audio" type="button">Turn Evan audio OFF</button>
           <label class="volume-label">Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
-          <span id="playback-status" class="meta">Audio is off · Evan voice ready</span>
+          <span id="playback-status" class="meta">Evan audio will be armed when you join.</span>
         </div>
       </footer>
     </main>
-    <script type="module" src="/audience.js?v=20260915-3"></script>
+    <script type="module" src="/audience.js?v=20260915-4"></script>
   </body>
 </html>
