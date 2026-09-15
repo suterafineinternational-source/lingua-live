@@ -51,6 +51,13 @@ h1 { margin:0; font-size:clamp(2.2rem,7vw,4.8rem); line-height:.97; letter-spaci
 #transport-mode[data-state="fallback"], #current-english-delay[data-state="watch"] { color:#b55a00; }
 #transport-mode[data-state="connecting"] { color:#335d55; }
 #current-english-delay[data-state="high"] { color:#9f2b25; }
+.natural-voice-banner { display:flex; flex-direction:column; gap:.2rem; margin:.8rem 0 1rem; padding:.8rem 1rem; border:1px solid #b7decf; border-radius:1rem; background:#ecf8f3; }
+.natural-voice-banner strong { color:#08734c; }
+.natural-voice-banner span { color:#52615d; font-size:.86rem; line-height:1.4; }
+.unlimited-pill { display:inline-flex; align-items:center; margin-left:.45rem; padding:.28rem .55rem; border-radius:999px; background:#e7f4ed; color:#08734c; font-size:.68rem; font-weight:900; letter-spacing:.055em; vertical-align:middle; }
+#record-live { background:#7b3f00; color:#fff; }
+#record-live:hover:not(:disabled) { background:#92500a; }
+#live-recording-status { padding:.65rem .8rem; border-radius:.75rem; background:#f7f9f8; }
 .audience-shell { min-height:100vh; display:flex; flex-direction:column; }
 .audience-header { margin-bottom:1rem; }
 .audience-header h1 { font-size:clamp(2rem,5vw,3.4rem); }
@@ -77,5 +84,5 @@ h1 { margin:0; font-size:clamp(2.2rem,7vw,4.8rem); line-height:.97; letter-spaci
   .caption-stage { min-height:100%; }
   .transport-dashboard { grid-template-columns:1fr 1fr; }
 }
-@media (max-width:47.99rem) { .two-col{grid-template-columns:1fr}.listener-bar{align-items:flex-start;flex-direction:column}.audio-controls{width:100%}.audio-controls button{flex:1}.volume-label{width:100%}.volume-label input{flex:1}.webinar-screen-card{min-height:14rem} }
+@media (max-width:47.99rem) { .two-col{grid-template-columns:1fr}.listener-bar{align-items:flex-start;flex-direction:column}.audio-controls{width:100%}.audio-controls button{flex:1}.volume-label{width:100%}.volume-label input{flex:1}.webinar-screen-card{min-height:14rem}.unlimited-pill{margin:.4rem 0 0;display:table} }
 @media (prefers-reduced-motion:no-preference) { button,.button-link{transition:transform 120ms ease,background 120ms ease} }

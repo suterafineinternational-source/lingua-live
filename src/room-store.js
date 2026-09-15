@@ -147,6 +147,8 @@ export class RoomStore {
       pinRequired: Boolean(room.audiencePinHash),
       status: room.status,
       listenerCount: this.listenerCount(room),
+      participantLimit: null,
+      participantPolicy: "uncapped",
       createdAt: new Date(room.createdAt).toISOString(),
       startedAt: room.startedAt ? new Date(room.startedAt).toISOString() : null,
       endedAt: room.endedAt ? new Date(room.endedAt).toISOString() : null,

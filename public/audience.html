@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Watch and listen to a live interpreted webinar with Lingua Live.">
     <title>Audience · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260915-1">
   </head>
   <body>
     <main class="shell audience-shell">
@@ -17,7 +17,8 @@
       <section class="audience-header">
         <p class="eyebrow" id="event-title">Live interpretation</p>
         <h1 id="language-pair">Connecting…</h1>
-        <p class="lede">Watch the shared webinar screen, read live English captions, and listen to the translated English voice.</p>
+        <p class="lede">Watch the shared webinar screen, read live English captions, and listen to the Natural Voice translated English stream.</p>
+        <p class="meta">This room has no application-level participant cap.</p>
       </section>
 
       <p id="error" class="error hidden" role="alert"></p>
@@ -44,10 +45,10 @@
         <div class="audio-controls">
           <button id="enable-audio" type="button">Enable English audio</button>
           <label class="volume-label">Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="1"></label>
-          <span id="playback-status" class="meta">Audio is off</span>
+          <span id="playback-status" class="meta">Audio is off · Natural Voice ready</span>
         </div>
       </footer>
     </main>
-    <script type="module" src="/audience.js?v=20260911-2"></script>
+    <script type="module" src="/audience.js?v=20260915-1"></script>
   </body>
 </html>

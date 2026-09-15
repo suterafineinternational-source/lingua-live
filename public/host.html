@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Host a live interpreted event with Lingua Live.">
     <title>Host · Lingua Live</title>
-    <link rel="stylesheet" href="/styles.css?v=20260912-2">
+    <link rel="stylesheet" href="/styles.css?v=20260915-1">
     <link rel="stylesheet" href="/quality.css?v=20260911-1">
   </head>
   <body>
@@ -18,7 +18,7 @@
       <section class="hero">
         <p class="eyebrow">Realtime interpretation</p>
         <h1>Run a live multilingual webinar.</h1>
-        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive English audio, live captions and your shared webinar screen.</p>
+        <p class="lede">Speak in Italian or capture Zoom / Google Meet from a browser tab. Guests receive Natural Voice English audio, live captions and your shared webinar screen.</p>
       </section>
       <p id="error" class="error hidden" role="alert"></p>
 
@@ -45,7 +45,7 @@
           <p class="meta">The browser-tab mode uses Chrome's screen/tab picker and requires “Share tab audio” for Zoom/Meet audio.</p>
           <hr>
           <label><input id="record-source" type="checkbox"> Record source audio locally</label>
-          <p class="meta">Off by default. Enable only with the required participant consent.</p>
+          <p class="meta">Optional backup of the original source audio. The live video recorder below records the shared video with translated English audio.</p>
         </aside>
       </section>
 
@@ -59,14 +59,15 @@
             <button id="copy-link" class="secondary">Copy invite</button>
             <a id="download-transcript" class="button-link" href="#">Download CSV</a>
             <button id="download-summary" class="secondary">Download summary</button>
-            <button id="download-recording" class="secondary hidden">Download recording</button>
+            <button id="download-recording" class="secondary hidden">Download source audio</button>
           </div>
           <img id="qr-code" class="qr" alt="Audience QR code">
         </article>
 
         <article class="card half">
           <h2>Live control</h2>
-          <p><strong id="listener-count">0</strong> listeners</p>
+          <p><strong id="listener-count">0</strong> listeners <span class="unlimited-pill">NO APPLICATION PARTICIPANT CAP</span></p>
+          <p class="meta">Lingua Live does not impose an application-level participant limit on a room. Actual simultaneous capacity still depends on the hosting/network resources available to the deployment.</p>
 
           <div class="live-source-panel" aria-label="Choose live audio source">
             <p class="live-source-title">1. Choose live audio source</p>
@@ -93,16 +94,20 @@
               <small id="english-delay-detail">Measured continuously from the live translation stream.</small>
             </div>
           </div>
+          <div class="natural-voice-banner"><strong>Natural Voice rendering: ON</strong><span>Dynamic source prosody from Realtime Translation plus smooth buffered playback and light voice mastering.</span></div>
           <div class="controls">
             <button id="start-room">2. Start interpretation</button>
             <button id="monitor-audio" class="secondary">Monitor English audio</button>
             <button id="share-screen" class="secondary">Share screen to audience</button>
+            <button id="record-live" class="secondary">Start live video recording</button>
+            <button id="download-live-recording" class="secondary hidden">Download live recording</button>
             <button id="end-room" class="danger">End event</button>
           </div>
           <p id="monitor-status" class="notice">English monitor OFF.</p>
+          <p id="live-recording-status" class="notice">Live recording OFF · records the shared video plus translated English audio locally in this browser.</p>
+          <p class="meta">Recording requires participant consent where applicable. If no screen is being shared, starting the live recording will ask you to choose a screen/window and will share it to the Audience room.</p>
           <p class="meta">Low-latency WebRTC translation is used automatically when supported; Lingua Live falls back to the server relay if the browser cannot establish it.</p>
           <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
-          <p class="meta">The monitor reports translated audio chunks received and actually scheduled for playback, so you can verify the English stream from the Host console.</p>
         </article>
 
         <article class="card two-thirds quality-card">
@@ -152,6 +157,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host-entry.js?v=20260912-2"></script>
+    <script type="module" src="/host-entry.js?v=20260915-1"></script>
   </body>
 </html>
