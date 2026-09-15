@@ -1,11 +1,12 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
+import { createNaturalVoiceChain, NATURAL_VOICE_LABEL, scheduleNaturalPcm } from "/natural-voice.js?v=20260915-1";
 
 const el = Object.fromEntries([
-  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","monitor-status","share-screen","listener-statuses","host-screen-preview","screen-share-status"
+  "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","monitor-status","share-screen","listener-statuses","host-screen-preview","screen-share-status","record-live","download-live-recording","live-recording-status"
 ].map((id) => [id.replaceAll("-", "_"), document.querySelector(`#${id}`)]));
 
 let room, hostToken, socket, reconnectTimer, mediaStream, audioContext, captureNode;
-let recorder, recordingChunks = [], recordingBlob;
+let sourceRecorder, sourceRecordingChunks = [], sourceRecordingBlob;
 let reconnectAttempt = 0;
 let shouldConnect = false;
 let sourceCurrent = "", targetCurrent = "";
@@ -15,22 +16,10 @@ let screenStream, screenVideo, screenCanvas, screenTimer;
 let screenFramesSent = 0;
 const listenerStatuses = new Map();
 
-function decodePcm16Le(base64, context) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  const sampleCount = Math.floor(bytes.byteLength / 2);
-  const buffer = context.createBuffer(1, sampleCount, 24000);
-  const channel = buffer.getChannelData(0);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let i = 0; i < sampleCount; i += 1) channel[i] = view.getInt16(i * 2, true) / 32768;
-  return buffer;
-}
-
 class PcmMonitor {
   constructor() {
     this.context = null;
-    this.gain = null;
+    this.voice = null;
     this.nextStart = 0;
     this.enabled = false;
     this.pending = [];
@@ -41,19 +30,15 @@ class PcmMonitor {
   async enable() {
     if (!window.AudioContext) throw new Error("Web Audio is not supported by this browser.");
     this.context ||= new AudioContext();
-    if (!this.gain) {
-      this.gain = this.context.createGain();
-      this.gain.gain.value = 1;
-      this.gain.connect(this.context.destination);
-    }
+    if (!this.voice) this.voice = createNaturalVoiceChain(this.context, this.context.destination, { volume: 1 });
     await this.context.resume();
     if (this.context.state !== "running") throw new Error("Browser audio output is still suspended. Click the button again and allow audio playback.");
     this.enabled = true;
-    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.04);
+    this.nextStart = Math.max(this.nextStart, this.context.currentTime + 0.055);
     const backlog = this.pending.splice(Math.max(0, this.pending.length - 10));
     this.pending = [];
     for (const chunk of backlog) this.play(chunk);
-    this.status(`English monitor ON · ${this.receivedChunks} translated chunks received · ${this.scheduledChunks} scheduled for playback`);
+    this.status(`${NATURAL_VOICE_LABEL} · monitor ON · ${this.receivedChunks} translated chunks received · ${this.scheduledChunks} scheduled`);
   }
   disable() {
     this.enabled = false;
@@ -64,7 +49,7 @@ class PcmMonitor {
   enqueue(base64) {
     if (!base64) return;
     this.receivedChunks += 1;
-    if (!this.enabled || !this.context || this.context.state !== "running") {
+    if (!this.enabled || !this.context || this.context.state !== "running" || !this.voice) {
       this.pending.push(base64);
       if (this.pending.length > 10) this.pending.shift();
       this.status(`English translation audio available · ${this.receivedChunks} chunks received · click “Monitor English audio” to hear it`);
@@ -74,15 +59,10 @@ class PcmMonitor {
   }
   play(base64) {
     try {
-      const buffer = decodePcm16Le(base64, this.context);
-      const source = this.context.createBufferSource();
-      source.buffer = buffer;
-      source.connect(this.gain);
-      const start = Math.max(this.context.currentTime + 0.025, this.nextStart);
-      source.start(start);
-      this.nextStart = start + buffer.duration;
+      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
+      this.nextStart = scheduled.nextStart;
       this.scheduledChunks += 1;
-      this.status(`English monitor ON · ${this.receivedChunks} chunks received · ${this.scheduledChunks} played/scheduled`);
+      this.status(`${NATURAL_VOICE_LABEL} · monitor ON · ${this.receivedChunks} chunks received · ${this.scheduledChunks} played/scheduled`);
     } catch (error) {
       this.status(`English monitor error: ${error.message}`);
       showError(new Error(`Could not play translated English audio: ${error.message}`));
@@ -97,6 +77,107 @@ class PcmMonitor {
   }
 }
 const monitor = new PcmMonitor();
+
+function preferredVideoMimeType() {
+  if (!window.MediaRecorder) return "";
+  const candidates = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+    "video/mp4",
+  ];
+  return candidates.find((type) => !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(type)) || "";
+}
+
+class LiveProgramRecorder {
+  constructor() {
+    this.recorder = null;
+    this.chunks = [];
+    this.blob = null;
+    this.context = null;
+    this.destination = null;
+    this.voice = null;
+    this.nextStart = 0;
+    this.stream = null;
+    this.mimeType = "";
+    this.stopResolve = null;
+  }
+  get active() { return this.recorder?.state === "recording" || this.recorder?.state === "paused"; }
+  status(text) { if (el.live_recording_status) setText(el.live_recording_status, text); }
+  async start(videoStream) {
+    if (!window.MediaRecorder) throw new Error("Video recording is not supported by this browser.");
+    const videoTrack = videoStream?.getVideoTracks?.()[0];
+    if (!videoTrack || videoTrack.readyState === "ended") throw new Error("A live screen/video track is required before recording can start.");
+    if (!window.AudioContext) throw new Error("Web Audio is required to record the translated English audio.");
+
+    this.chunks = [];
+    this.blob = null;
+    this.mimeType = preferredVideoMimeType();
+    if (el.download_live_recording) el.download_live_recording.classList.add("hidden");
+
+    this.context = new AudioContext();
+    this.destination = this.context.createMediaStreamDestination();
+    this.voice = createNaturalVoiceChain(this.context, this.destination, { volume: 1 });
+    await this.context.resume();
+    this.nextStart = this.context.currentTime + 0.055;
+
+    const recordedVideoTrack = videoTrack.clone();
+    const programAudioTracks = this.destination.stream.getAudioTracks();
+    this.stream = new MediaStream([recordedVideoTrack, ...programAudioTracks]);
+    const options = this.mimeType ? { mimeType: this.mimeType, videoBitsPerSecond: 3_500_000, audioBitsPerSecond: 128_000 } : undefined;
+    this.recorder = new MediaRecorder(this.stream, options);
+    this.recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) this.chunks.push(event.data); });
+    this.recorder.addEventListener("error", (event) => {
+      const message = event.error?.message || "Live recording failed.";
+      this.status(`Recording error: ${message}`);
+      showError(new Error(message));
+    });
+    this.recorder.addEventListener("stop", () => this.finalize(), { once: true });
+    recordedVideoTrack.addEventListener("ended", () => { if (this.active) void stopLiveProgramRecording(); }, { once: true });
+    this.recorder.start(1000);
+    this.status("RECORDING LIVE · shared video + Natural Voice English audio · stored locally in this browser");
+  }
+  enqueue(base64) {
+    if (!this.active || !this.context || this.context.state !== "running" || !this.voice || !base64) return;
+    try {
+      const scheduled = scheduleNaturalPcm({ context: this.context, input: this.voice.input, base64, nextStart: this.nextStart });
+      this.nextStart = scheduled.nextStart;
+    } catch (error) {
+      this.status(`Recording audio warning: ${error.message}`);
+    }
+  }
+  stop() {
+    if (!this.active) return Promise.resolve(this.blob);
+    return new Promise((resolve) => {
+      this.stopResolve = resolve;
+      this.status("Finalizing live video recording…");
+      this.recorder.stop();
+    });
+  }
+  finalize() {
+    if (this.chunks.length) {
+      const type = this.recorder?.mimeType || this.mimeType || "video/webm";
+      this.blob = new Blob(this.chunks, { type });
+      if (el.download_live_recording) el.download_live_recording.classList.remove("hidden");
+      this.status(`Recording ready · ${(this.blob.size / (1024 * 1024)).toFixed(1)} MB · video + translated English audio`);
+    } else {
+      this.status("Recording stopped, but the browser did not return media data.");
+    }
+    this.stream?.getTracks().forEach((track) => track.stop());
+    this.stream = null;
+    if (this.context && this.context.state !== "closed") void this.context.close();
+    this.context = null;
+    this.destination = null;
+    this.voice = null;
+    this.nextStart = 0;
+    const resolve = this.stopResolve;
+    this.stopResolve = null;
+    this.recorder = null;
+    if (el.record_live) el.record_live.textContent = "Start live video recording";
+    resolve?.(this.blob);
+  }
+}
+const liveProgramRecorder = new LiveProgramRecorder();
 
 function glossaryFrom(textarea) { return textarea.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean); }
 function showError(error) { el.error.textContent = error?.message || "Something went wrong."; el.error.classList.remove("hidden"); }
@@ -137,10 +218,17 @@ function renderListenerStatuses() {
 function renderRoom(nextRoom) {
   room = nextRoom; el.create_panel.classList.add("hidden"); el.room_panel.classList.remove("hidden");
   setText(el.room_code, room.code); setText(el.listener_count, String(room.listenerCount)); setText(el.room_status, room.status[0].toUpperCase() + room.status.slice(1)); el.room_status.dataset.state = room.status;
-  setText(el.event_summary, `${room.title || "Lingua Live event"} · ${room.sourceLanguage?.toUpperCase()} → ${room.targetLanguage?.toUpperCase()}`);
+  setText(el.event_summary, `${room.title || "Lingua Live event"} · ${room.sourceLanguage?.toUpperCase()} → ${room.targetLanguage?.toUpperCase()} · no application participant cap`);
   el.start_room.disabled = ["starting","live","ended"].includes(room.status); el.end_room.disabled = room.status === "ended"; el.save_glossary.disabled = room.status === "ended";
   if (room.glossary) el.room_glossary.value = room.glossary.join("\n");
-  if (room.status === "ended") { shouldConnect = false; stopCapture(); stopScreenShare(); monitor.reset(); setText(el.service_status, "This event has ended."); }
+  if (room.status === "ended") {
+    shouldConnect = false;
+    stopCapture();
+    if (liveProgramRecorder.active) void stopLiveProgramRecording();
+    stopScreenShare();
+    monitor.reset();
+    setText(el.service_status, "This event has ended.");
+  }
   if (hostToken) el.download_transcript.href = `/api/rooms/${room.code}/transcript.csv?download=1`;
 }
 function invitation(inviteUrl) { el.invite_link.href = inviteUrl; el.invite_link.textContent = inviteUrl; el.qr_code.src = `/api/rooms/${room.code}/qr`; }
@@ -163,7 +251,7 @@ function connectSocket() {
     if (event.type === "source_transcript.done") { appendLine(el.source_transcript, event.transcript || sourceCurrent); sourceCurrent = ""; engineStatus = "Source speech transcribed"; renderLiveDiagnostic(); }
     if (event.type === "transcript.delta") { targetCurrent += event.delta || ""; if (targetCurrent) setText(el.service_status, `TRANSLATING: ${targetCurrent.slice(-120)}`); }
     if (event.type === "transcript.done") { appendLine(el.translated_transcript, event.transcript || targetCurrent); targetCurrent = ""; engineStatus = "Translation received"; renderLiveDiagnostic(); }
-    if (event.type === "audio.delta") monitor.enqueue(event.audio);
+    if (event.type === "audio.delta") { monitor.enqueue(event.audio); liveProgramRecorder.enqueue(event.audio); }
     if (event.type === "listener.status") { listenerStatuses.set(event.clientId, event); renderListenerStatuses(); }
   });
   socket.addEventListener("close", (event) => {
@@ -175,16 +263,16 @@ function connectSocket() {
 
 function bytesToBase64(buffer) { const bytes = new Uint8Array(buffer); let binary = ""; for (let i=0;i<bytes.length;i++) binary += String.fromCharCode(bytes[i]); return btoa(binary); }
 
-function beginRecording() {
-  recordingBlob = null; recordingChunks = []; el.download_recording.classList.add("hidden");
+function beginSourceRecording() {
+  sourceRecordingBlob = null; sourceRecordingChunks = []; el.download_recording.classList.add("hidden");
   if (!el.record_source.checked || !mediaStream || !window.MediaRecorder) return;
   const audioOnly = new MediaStream(mediaStream.getAudioTracks()); if (!audioOnly.getAudioTracks().length) return;
   try {
-    recorder = new MediaRecorder(audioOnly);
-    recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) recordingChunks.push(event.data); });
-    recorder.addEventListener("stop", () => { if (!recordingChunks.length) return; recordingBlob = new Blob(recordingChunks, { type: recorder.mimeType || "audio/webm" }); el.download_recording.classList.remove("hidden"); });
-    recorder.start(1000);
-  } catch (error) { recorder = null; showError(new Error(`Local recording could not start: ${error.message}`)); }
+    sourceRecorder = new MediaRecorder(audioOnly);
+    sourceRecorder.addEventListener("dataavailable", (event) => { if (event.data?.size) sourceRecordingChunks.push(event.data); });
+    sourceRecorder.addEventListener("stop", () => { if (!sourceRecordingChunks.length) return; sourceRecordingBlob = new Blob(sourceRecordingChunks, { type: sourceRecorder.mimeType || "audio/webm" }); el.download_recording.classList.remove("hidden"); });
+    sourceRecorder.start(1000);
+  } catch (error) { sourceRecorder = null; showError(new Error(`Local source recording could not start: ${error.message}`)); }
 }
 
 function encodedFrame(video, canvas) {
@@ -235,7 +323,10 @@ async function prepareScreenRelay(stream) {
   sendFrame();
   screenTimer = setInterval(sendFrame, 650);
   screenTimer.unref?.();
-  stream.getVideoTracks()[0]?.addEventListener("ended", () => stopScreenShare());
+  stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+    if (liveProgramRecorder.active) void stopLiveProgramRecording();
+    stopScreenShare();
+  }, { once: true });
 }
 function stopScreenRelayOnly() {
   clearInterval(screenTimer); screenTimer = null;
@@ -252,6 +343,22 @@ function stopScreenShare() {
   setText(el.screen_share_status, "Not sharing yet.");
 }
 
+async function ensureScreenForLiveRecording() {
+  const current = screenStream?.getVideoTracks?.()[0];
+  if (current && current.readyState !== "ended") return screenStream;
+  if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is not supported by this browser.");
+  const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  if (!stream.getVideoTracks().length) { stream.getTracks().forEach((track) => track.stop()); throw new Error("No screen/video track was shared."); }
+  await prepareScreenRelay(stream);
+  return stream;
+}
+
+async function stopLiveProgramRecording() {
+  const blob = await liveProgramRecorder.stop();
+  if (el.record_live) el.record_live.textContent = "Start live video recording";
+  return blob;
+}
+
 async function startCapture() {
   if (mediaStream) return;
   try {
@@ -260,13 +367,13 @@ async function startCapture() {
       mediaStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       if (!mediaStream.getAudioTracks().length) { mediaStream.getTracks().forEach((t) => t.stop()); mediaStream = null; throw new Error("No audio track was shared. For Zoom/Google Meet choose the meeting tab and enable Share tab audio."); }
     } else {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
     }
   } catch (error) {
     if (error?.name === "NotAllowedError") throw new Error("Audio permission was denied. Allow microphone/screen audio access and try again.");
     throw error;
   }
-  audioChunkCount = 0; nonSilentChunkCount = 0; lastPeak = 0; beginRecording();
+  audioChunkCount = 0; nonSilentChunkCount = 0; lastPeak = 0; beginSourceRecording();
   audioContext = new AudioContext(); await audioContext.audioWorklet.addModule("/pcm-worklet.js"); await audioContext.resume();
   const source = audioContext.createMediaStreamSource(mediaStream); captureNode = new AudioWorkletNode(audioContext, "pcm-capture"); const silent = audioContext.createGain(); silent.gain.value = 0; source.connect(captureNode).connect(silent).connect(audioContext.destination);
   captureNode.port.onmessage = ({ data }) => {
@@ -278,7 +385,7 @@ async function startCapture() {
   renderLiveDiagnostic();
 }
 function stopCapture() {
-  if (recorder?.state === "recording") recorder.stop(); recorder = null; captureNode?.disconnect(); captureNode = null;
+  if (sourceRecorder?.state === "recording") sourceRecorder.stop(); sourceRecorder = null; captureNode?.disconnect(); captureNode = null;
   if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop()); mediaStream = null; audioContext?.close(); audioContext = null;
 }
 
@@ -294,7 +401,7 @@ el.start_room.addEventListener("click", async () => {
   clearError(); el.start_room.disabled = true; engineStatus = "Requesting audio source…"; renderLiveDiagnostic();
   try {
     await startCapture(); engineStatus = "Connecting translation engine…"; renderLiveDiagnostic();
-    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = "English interpretation connected; listening for speech"; renderLiveDiagnostic();
+    const payload = await api(`/api/rooms/${room.code}/start`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); renderRoom(payload.room); engineStatus = `${NATURAL_VOICE_LABEL} · English interpretation connected; listening for speech`; renderLiveDiagnostic();
   } catch (error) { showError(error); engineStatus = error?.message || "Could not start interpretation"; renderLiveDiagnostic(); el.start_room.disabled = false; stopCapture(); }
 });
 
@@ -314,7 +421,11 @@ el.monitor_audio.addEventListener("click", async () => {
 el.share_screen.addEventListener("click", async () => {
   clearError();
   try {
-    if (screenStream) { stopScreenShare(); return; }
+    if (screenStream) {
+      if (liveProgramRecorder.active) await stopLiveProgramRecording();
+      stopScreenShare();
+      return;
+    }
     if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen sharing is not supported by this browser.");
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
     if (!stream.getVideoTracks().length) { stream.getTracks().forEach((track) => track.stop()); throw new Error("No screen/video track was shared."); }
@@ -322,9 +433,36 @@ el.share_screen.addEventListener("click", async () => {
   } catch (error) { showError(error); setText(el.screen_share_status, `Screen sharing error: ${error.message}`); }
 });
 
+el.record_live?.addEventListener("click", async () => {
+  clearError();
+  try {
+    if (liveProgramRecorder.active) {
+      await stopLiveProgramRecording();
+      return;
+    }
+    if (!room || room.status !== "live") throw new Error("Start interpretation before recording the live program.");
+    const videoStream = await ensureScreenForLiveRecording();
+    await liveProgramRecorder.start(videoStream);
+    el.record_live.textContent = "Stop live video recording";
+  } catch (error) {
+    showError(new Error(`Could not start live video recording: ${error.message}`));
+    liveProgramRecorder.status(`Recording unavailable: ${error.message}`);
+  }
+});
+
+el.download_live_recording?.addEventListener("click", () => {
+  const blob = liveProgramRecorder.blob;
+  if (!blob) return;
+  const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+  downloadBlob(blob, `lingua-live-${room?.code || "event"}-audience-program.${extension}`);
+});
+
 el.end_room.addEventListener("click", async () => {
   clearError(); el.end_room.disabled = true;
-  try { const payload = await api(`/api/rooms/${room.code}/end`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); shouldConnect = false; socket?.close(); stopCapture(); stopScreenShare(); renderRoom(payload.room); }
+  try {
+    if (liveProgramRecorder.active) await stopLiveProgramRecording();
+    const payload = await api(`/api/rooms/${room.code}/end`, { method: "POST", headers: { Authorization: `Bearer ${hostToken}` } }); shouldConnect = false; socket?.close(); stopCapture(); stopScreenShare(); renderRoom(payload.room);
+  }
   catch (error) { showError(error); el.end_room.disabled = false; }
 });
 
@@ -335,7 +473,7 @@ el.save_glossary.addEventListener("click", async () => {
 el.copy_link.addEventListener("click", async () => { try { await navigator.clipboard.writeText(el.invite_link.href); engineStatus = "Invite copied"; renderLiveDiagnostic(); } catch { showError(new Error("Could not copy automatically. Select the invite link instead.")); } });
 el.download_transcript.addEventListener("click", async (event) => { event.preventDefault(); try { const response = await fetch(`/api/rooms/${room.code}/transcript.csv`, { headers: { Authorization: `Bearer ${hostToken}` } }); if (!response.ok) throw new Error("Transcript export failed."); downloadBlob(await response.blob(), `lingua-live-${room.code}.csv`); } catch (error) { showError(error); } });
 el.download_summary.addEventListener("click", async () => { try { const response = await fetch(`/api/rooms/${room.code}/summary`, { headers: { Authorization: `Bearer ${hostToken}` } }); if (!response.ok) throw new Error("Event summary export failed."); const body = await response.json(); downloadBlob(new Blob([JSON.stringify(body, null, 2)], { type: "application/json" }), `lingua-live-${room.code}-summary.json`); } catch (error) { showError(error); } });
-el.download_recording.addEventListener("click", () => { if (!recordingBlob) return; const extension = recordingBlob.type.includes("ogg") ? "ogg" : recordingBlob.type.includes("mp4") ? "m4a" : "webm"; downloadBlob(recordingBlob, `lingua-live-${room?.code || "event"}-source.${extension}`); });
+el.download_recording.addEventListener("click", () => { if (!sourceRecordingBlob) return; const extension = sourceRecordingBlob.type.includes("ogg") ? "ogg" : sourceRecordingBlob.type.includes("mp4") ? "m4a" : "webm"; downloadBlob(sourceRecordingBlob, `lingua-live-${room?.code || "event"}-source.${extension}`); });
 
 async function restoreRoom() {
   const code = new URLSearchParams(location.search).get("room")?.toUpperCase(); if (!code) return;
