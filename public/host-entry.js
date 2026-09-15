@@ -24,7 +24,7 @@ try {
   if (detail) detail.textContent = "The low-latency browser transport could not load; the server relay remains available.";
 }
 
-await import("/host.js?v=20260911-4");
+await import("/host.js?v=20260915-1");
 
 if (!qualityLoaded) {
   const verdict = document.querySelector("#quality-verdict");
