@@ -2,16 +2,38 @@ export function audioContextConstructor() {
   return window.AudioContext || window.webkitAudioContext || null;
 }
 
-export function decodePcm16Le(base64, context, sampleRate = 24000) {
+export function base64ToBytes(base64) {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  const sampleCount = Math.floor(bytes.byteLength / 2);
+  return bytes;
+}
+
+export function reassemblePcm16Le(base64, carryByte = null) {
+  const incoming = base64ToBytes(base64);
+  const hasCarry = Number.isInteger(carryByte) && carryByte >= 0 && carryByte <= 255;
+  const combined = new Uint8Array(incoming.byteLength + (hasCarry ? 1 : 0));
+  if (hasCarry) combined[0] = carryByte;
+  combined.set(incoming, hasCarry ? 1 : 0);
+  const alignedLength = combined.byteLength - (combined.byteLength % 2);
+  return {
+    bytes: combined.slice(0, alignedLength),
+    carryByte: alignedLength < combined.byteLength ? combined[alignedLength] : null,
+  };
+}
+
+export function decodePcm16LeBytes(bytes, context, sampleRate = 24000) {
+  if (bytes.byteLength % 2) throw new Error("PCM16 audio ended in the middle of a 16-bit sample.");
+  const sampleCount = bytes.byteLength / 2;
   const buffer = context.createBuffer(1, sampleCount, sampleRate);
   const channel = buffer.getChannelData(0);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   for (let i = 0; i < sampleCount; i += 1) channel[i] = view.getInt16(i * 2, true) / 32768;
   return buffer;
+}
+
+export function decodePcm16Le(base64, context, sampleRate = 24000) {
+  return decodePcm16LeBytes(base64ToBytes(base64), context, sampleRate);
 }
 
 function isAppleMobileBrowser() {
@@ -58,6 +80,8 @@ export class PcmQueuePlayer {
     this.lastScheduledAt = 0;
     this.resumePromise = null;
     this.stateListenerAttached = false;
+    this.pcmCarryByte = null;
+    this.pcmCarrySampleRate = null;
     this.gestureResume = () => { if (this.enabled) void this.resumeAndDrain(); };
   }
 
@@ -185,6 +209,8 @@ export class PcmQueuePlayer {
     this.enabled = false;
     this.pending = [];
     this.nextStart = this.context?.currentTime || 0;
+    this.pcmCarryByte = null;
+    this.pcmCarrySampleRate = null;
     this.detachGestureResume();
     return this.snapshot();
   }
@@ -198,13 +224,19 @@ export class PcmQueuePlayer {
   enqueue(audio, sampleRate = 24000) {
     if (!audio) return this.snapshot();
     this.receivedChunks += 1;
+    const normalizedRate = Number(sampleRate) || 24000;
+    if (this.pcmCarrySampleRate !== null && this.pcmCarrySampleRate !== normalizedRate) this.pcmCarryByte = null;
+    this.pcmCarrySampleRate = normalizedRate;
+    const aligned = reassemblePcm16Le(audio, this.pcmCarryByte);
+    this.pcmCarryByte = aligned.carryByte;
+    if (!aligned.bytes.byteLength) return this.snapshot();
     if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain || !this.outputConnected) {
-      this.pending.push({ audio, sampleRate });
+      this.pending.push({ bytes: aligned.bytes, sampleRate: normalizedRate });
       if (this.pending.length > this.maxPending) this.pending.shift();
       if (this.enabled) void this.resumeAndDrain().catch(() => {});
       return this.snapshot();
     }
-    this.play(audio, sampleRate);
+    this.play(aligned.bytes, normalizedRate);
     return this.snapshot();
   }
 
@@ -212,17 +244,17 @@ export class PcmQueuePlayer {
     if (!this.enabled || !this.context || this.context.state !== "running" || !this.gain || !this.outputConnected || !this.pending.length) return this.snapshot();
     const backlog = this.pending.splice(Math.max(0, this.pending.length - this.maxPending));
     this.pending = [];
-    for (const item of backlog) this.play(item.audio, item.sampleRate);
+    for (const item of backlog) this.play(item.bytes, item.sampleRate);
     return this.snapshot();
   }
 
-  play(audio, sampleRate = 24000) {
+  play(bytes, sampleRate = 24000) {
     if (!this.context || this.context.state !== "running" || !this.gain || !this.outputConnected) {
-      this.pending.push({ audio, sampleRate });
+      this.pending.push({ bytes, sampleRate });
       if (this.pending.length > this.maxPending) this.pending.shift();
       return this.snapshot();
     }
-    const buffer = decodePcm16Le(audio, this.context, sampleRate);
+    const buffer = decodePcm16LeBytes(bytes, this.context, sampleRate);
     const source = this.context.createBufferSource();
     source.buffer = buffer;
     source.connect(this.gain);
@@ -237,6 +269,8 @@ export class PcmQueuePlayer {
   reset() {
     this.pending = [];
     this.nextStart = this.context?.currentTime || 0;
+    this.pcmCarryByte = null;
+    this.pcmCarrySampleRate = null;
     this.receivedChunks = 0;
     this.scheduledChunks = 0;
     this.lastScheduledAt = 0;
@@ -252,6 +286,7 @@ export class PcmQueuePlayer {
       receivedChunks: this.receivedChunks,
       scheduledChunks: this.scheduledChunks,
       pendingChunks: this.pending.length,
+      partialPcmSampleBuffered: this.pcmCarryByte !== null,
       queuedSeconds: this.context ? Math.max(0, this.nextStart - this.context.currentTime) : 0,
       lastScheduledAt: this.lastScheduledAt,
     };
