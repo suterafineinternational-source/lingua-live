@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { PcmQueuePlayer } from "/pcm-playback.js?v=20260915-5";
+import { PcmQueuePlayer } from "/pcm-playback.js?v=20260930-1";
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
