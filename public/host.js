@@ -192,7 +192,7 @@ function renderListenerStatuses() {
   for (const [id, status] of rows) {
     const p = document.createElement("p"); p.className = "transcript-line";
     if (status.disconnected) p.textContent = `${id.slice(-6)} · disconnected`;
-    else p.textContent = `${id.slice(-6)} · audio ${status.audioEnabled ? "ON" : "OFF"} · context ${status.audioContextState || "unknown"} · ${status.receivedChunks || 0} received · ${status.playedChunks || 0} played · volume ${Math.round((status.volume ?? 1) * 100)}%${status.lastPlaybackAt ? ` · last ${new Date(status.lastPlaybackAt).toLocaleTimeString()}` : ""}`;
+    else p.textContent = `${id.slice(-6)} · audio ${status.audioEnabled ? "ON" : "OFF"} · context ${status.audioContextState || "unknown"} · ${status.outputMode || "unknown output"} · ${status.receivedChunks || 0} received · ${status.playedChunks || 0} played · drops ${status.droppedSamples || 0} · underruns ${status.underflowEvents || 0} · recoveries ${status.queueRecoveries || 0} · volume ${Math.round((status.volume ?? 1) * 100)}%${status.lastPlaybackAt ? ` · last ${new Date(status.lastPlaybackAt).toLocaleTimeString()}` : ""}`;
     el.listener_statuses.append(p);
   }
 }
