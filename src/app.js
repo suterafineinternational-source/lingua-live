@@ -463,7 +463,7 @@ export function createLinguaServer(options = {}) {
 
   webSockets.on("connection", (ws, _request, { room, role, clientId }) => {
     metrics.websocketConnections += 1; const key = `${role}:${clientId}`; const previous = room.clients.get(key); if (previous) previous.ws.close(4001, "Reconnected elsewhere");
-    const client = { ws, role, clientId, backpressureNotified: false, audioEnabled: false, playedChunks: 0, volume: 1, lastPlaybackAt: null };
+    const client = { ws, role, clientId, backpressureNotified: false, audioEnabled: false, playedChunks: 0, volume: 1, lastPlaybackAt: null, outputMode: null, droppedSamples: 0, underflowEvents: 0, queueRecoveries: 0 };
     room.clients.set(key, client);
     if (role === "host") { clearTimeout(room.hostGraceTimer); room.hostGraceTimer = null; }
     sendJson(ws, { type: "session.ready", role, room: role === "host" ? rooms.hostView(room) : rooms.publicView(room), history: role === "audience" ? room.history : undefined, transcript: role === "host" ? rooms.transcriptView(room) : undefined, audio: { format: "pcm16", sampleRate: 24000, channels: 1, provider: voiceLocked ? "elevenlabs" : "openai", voiceName: voiceLocked ? "Evan" : undefined, voiceId: voiceLocked ? elevenLabsVoiceId : undefined } });
@@ -480,7 +480,11 @@ export function createLinguaServer(options = {}) {
             if (Number.isFinite(Number(message.playedChunks))) client.playedChunks = Math.max(0, Number(message.playedChunks));
             if (Number.isFinite(Number(message.volume))) client.volume = Math.max(0, Math.min(1, Number(message.volume)));
             client.lastPlaybackAt = Number(message.lastPlaybackAt) || client.lastPlaybackAt;
-            broadcastRoom(room, { type: "listener.status", clientId, audioEnabled: client.audioEnabled, playedChunks: client.playedChunks, volume: client.volume, lastPlaybackAt: client.lastPlaybackAt }, { hostOnly: true });
+            if (typeof message.outputMode === "string") client.outputMode = message.outputMode.slice(0, 32);
+            if (Number.isFinite(Number(message.droppedSamples))) client.droppedSamples = Math.max(0, Number(message.droppedSamples));
+            if (Number.isFinite(Number(message.underflowEvents))) client.underflowEvents = Math.max(0, Number(message.underflowEvents));
+            if (Number.isFinite(Number(message.queueRecoveries))) client.queueRecoveries = Math.max(0, Number(message.queueRecoveries));
+            broadcastRoom(room, { type: "listener.status", clientId, audioEnabled: client.audioEnabled, playedChunks: client.playedChunks, volume: client.volume, lastPlaybackAt: client.lastPlaybackAt, outputMode: client.outputMode, droppedSamples: client.droppedSamples, underflowEvents: client.underflowEvents, queueRecoveries: client.queueRecoveries }, { hostOnly: true });
             return;
           }
           throw new AppError(403, "FORBIDDEN_MESSAGE", "Audience connections cannot send host controls or source audio.");
