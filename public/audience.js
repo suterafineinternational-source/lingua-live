@@ -81,6 +81,10 @@ function playbackPayload(type, now = null) {
     pendingChunks: state.pendingChunks,
     queuedSeconds: Number(state.queuedSeconds.toFixed(3)),
     audioContextState: state.state,
+    outputMode: state.outputMode,
+    droppedSamples: state.droppedSamples,
+    underflowEvents: state.underflowEvents,
+    queueRecoveries: state.queueRecoveries,
     lastPlaybackAt: now || state.lastScheduledAt || null,
   };
 }
