@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { PcmQueuePlayer } from "/pcm-playback.js?v=20260930-1";
+import { PcmQueuePlayer } from "/pcm-playback.js?v=20260930-2";
 
 const roomCode = location.pathname.split("/").filter(Boolean).at(-1).toUpperCase();
 const elements = {
@@ -17,7 +17,7 @@ class AudiencePlayer {
   snapshot() { return this.engine.snapshot(); }
   status(prefix) {
     const state = this.snapshot();
-    setText(elements.playbackStatus, `${prefix} · context ${state.state} · ${state.receivedChunks} received · ${state.scheduledChunks} played/scheduled · queue ${state.queuedSeconds.toFixed(2)} s`);
+    setText(elements.playbackStatus, `${prefix} · context ${state.state} · ${state.receivedChunks} received · ${state.scheduledChunks} played/scheduled · queue ${state.queuedSeconds.toFixed(2)} s · ${state.outputMode} · drops ${state.droppedSamples} · underruns ${state.underflowEvents}`);
   }
   async enable() {
     await this.engine.enable();
