@@ -36,6 +36,8 @@ class PcmStreamOutputProcessor extends AudioWorkletProcessor {
     this.primeSample = null;
     this.ready = false;
     this.inUnderflow = true;
+    this.underflowEvents = 0;
+    this.droppedSamples = 0;
     this.postStats(true);
   }
 
