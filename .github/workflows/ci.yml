@@ -31,6 +31,7 @@ jobs:
           node --check public/low-latency-webrtc.js
           node --check public/translated-relay-worklet.js
           node --check public/pcm-playback.js
+          node --check public/pcm-output-worklet.js
           node --check public/quality-bootstrap.js
           node --check public/quality-monitor.js
           node --check public/audience.js

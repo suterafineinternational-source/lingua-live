@@ -62,19 +62,26 @@ export async function unlockAudioContext(context) {
 }
 
 export class PcmQueuePlayer {
-  constructor({ volume = 1, lookAhead = 0.035, maxPending = 24 } = {}) {
+  constructor({ volume = 1, lookAhead = 0.035, maxPending = 24, maxBufferedSeconds = 3 } = {}) {
     this.context = null;
     this.gain = null;
     this.mediaDestination = null;
     this.audioElement = null;
     this.outputConnected = false;
     this.sinkMode = "uninitialized";
+    this.outputMode = "uninitialized";
+    this.streamNode = null;
+    this.workletLoadFailed = false;
+    this.workletStats = { queuedSeconds: 0, droppedSamples: 0, underflowEvents: 0, bufferedSamples: 0, inputSampleRate: 24000 };
     this.nextStart = 0;
+    this.activeSources = new Set();
+    this.queueRecoveries = 0;
     this.enabled = false;
     this.pending = [];
     this.volume = volume;
     this.lookAhead = lookAhead;
     this.maxPending = maxPending;
+    this.maxBufferedSeconds = maxBufferedSeconds;
     this.receivedChunks = 0;
     this.scheduledChunks = 0;
     this.lastScheduledAt = 0;
@@ -99,6 +106,39 @@ export class PcmQueuePlayer {
     window.removeEventListener("pageshow", this.gestureResume);
   }
 
+  async ensureStreamNode() {
+    if (this.streamNode || this.workletLoadFailed || !this.context || !this.gain) return;
+    if (!this.context.audioWorklet || typeof AudioWorkletNode === "undefined") {
+      this.workletLoadFailed = true;
+      this.outputMode = "buffer-source";
+      return;
+    }
+    try {
+      await this.context.audioWorklet.addModule("/pcm-output-worklet.js?v=20260930-2");
+      const node = new AudioWorkletNode(this.context, "pcm-stream-output", {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      node.port.onmessage = ({ data }) => {
+        if (data?.type !== "stats") return;
+        this.workletStats = {
+          queuedSeconds: Math.max(0, Number(data.queuedSeconds) || 0),
+          droppedSamples: Math.max(0, Number(data.droppedSamples) || 0),
+          underflowEvents: Math.max(0, Number(data.underflowEvents) || 0),
+          bufferedSamples: Math.max(0, Number(data.bufferedSamples) || 0),
+          inputSampleRate: Math.max(1, Number(data.inputSampleRate) || 24000),
+        };
+      };
+      node.connect(this.gain);
+      this.streamNode = node;
+      this.outputMode = "audio-worklet";
+    } catch {
+      this.workletLoadFailed = true;
+      this.outputMode = "buffer-source";
+    }
+  }
+
   async ensureContext() {
     const Ctor = audioContextConstructor();
     if (!Ctor) throw new Error("Web Audio is not supported by this browser.");
@@ -110,7 +150,12 @@ export class PcmQueuePlayer {
       this.audioElement = null;
       this.outputConnected = false;
       this.sinkMode = "uninitialized";
+      this.outputMode = "uninitialized";
+      this.streamNode = null;
+      this.workletLoadFailed = false;
+      this.workletStats = { queuedSeconds: 0, droppedSamples: 0, underflowEvents: 0, bufferedSamples: 0, inputSampleRate: 24000 };
       this.nextStart = 0;
+      this.activeSources.clear();
       this.stateListenerAttached = false;
     }
     if (!this.gain) {
@@ -118,6 +163,8 @@ export class PcmQueuePlayer {
       this.gain.gain.value = this.volume;
       this.outputConnected = false;
     }
+    await this.ensureStreamNode();
+    if (this.outputMode === "uninitialized") this.outputMode = "buffer-source";
     if (!this.stateListenerAttached) {
       this.context.addEventListener?.("statechange", () => {
         if (this.enabled && this.context?.state === "running") this.drainPending();
@@ -205,10 +252,25 @@ export class PcmQueuePlayer {
     return this.snapshot();
   }
 
+  clearFallbackSources() {
+    for (const source of this.activeSources) {
+      try { source.onended = null; source.stop(); } catch {}
+      try { source.disconnect(); } catch {}
+    }
+    this.activeSources.clear();
+    this.nextStart = this.context?.currentTime || 0;
+  }
+
+  clearStreamBuffer() {
+    try { this.streamNode?.port.postMessage({ type: "reset" }); } catch {}
+    this.workletStats = { queuedSeconds: 0, droppedSamples: 0, underflowEvents: 0, bufferedSamples: 0, inputSampleRate: 24000 };
+  }
+
   disable() {
     this.enabled = false;
     this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
+    this.clearStreamBuffer();
+    this.clearFallbackSources();
     this.pcmCarryByte = null;
     this.pcmCarrySampleRate = null;
     this.detachGestureResume();
@@ -248,46 +310,95 @@ export class PcmQueuePlayer {
     return this.snapshot();
   }
 
+  pcm16Samples(bytes) {
+    if (bytes.byteLength % 2) throw new Error("PCM16 audio ended in the middle of a 16-bit sample.");
+    const samples = new Int16Array(bytes.byteLength / 2);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let index = 0; index < samples.length; index += 1) samples[index] = view.getInt16(index * 2, true);
+    return samples;
+  }
+
+  playWithWorklet(bytes, sampleRate) {
+    const samples = this.pcm16Samples(bytes);
+    const transferable = samples.buffer;
+    this.streamNode.port.postMessage({
+      type: "push",
+      samples: transferable,
+      sampleRate,
+      maxBufferedSeconds: this.maxBufferedSeconds,
+    }, [transferable]);
+    this.scheduledChunks += 1;
+    this.lastScheduledAt = Date.now();
+  }
+
+  recoverFallbackQueue() {
+    this.clearFallbackSources();
+    this.queueRecoveries += 1;
+    this.nextStart = (this.context?.currentTime || 0) + this.lookAhead;
+  }
+
+  playWithBufferSource(bytes, sampleRate) {
+    if (this.nextStart - this.context.currentTime > this.maxBufferedSeconds) this.recoverFallbackQueue();
+    const buffer = decodePcm16LeBytes(bytes, this.context, sampleRate);
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.gain);
+    source.onended = () => {
+      this.activeSources.delete(source);
+      try { source.disconnect(); } catch {}
+    };
+    const start = Math.max(this.context.currentTime + this.lookAhead, this.nextStart);
+    this.activeSources.add(source);
+    source.start(start);
+    this.nextStart = start + buffer.duration;
+    this.scheduledChunks += 1;
+    this.lastScheduledAt = Date.now();
+  }
+
   play(bytes, sampleRate = 24000) {
     if (!this.context || this.context.state !== "running" || !this.gain || !this.outputConnected) {
       this.pending.push({ bytes, sampleRate });
       if (this.pending.length > this.maxPending) this.pending.shift();
       return this.snapshot();
     }
-    const buffer = decodePcm16LeBytes(bytes, this.context, sampleRate);
-    const source = this.context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(this.gain);
-    const start = Math.max(this.context.currentTime + this.lookAhead, this.nextStart);
-    source.start(start);
-    this.nextStart = start + buffer.duration;
-    this.scheduledChunks += 1;
-    this.lastScheduledAt = Date.now();
+    if (this.streamNode && this.outputMode === "audio-worklet") this.playWithWorklet(bytes, sampleRate);
+    else this.playWithBufferSource(bytes, sampleRate);
     return this.snapshot();
   }
 
   reset() {
     this.pending = [];
-    this.nextStart = this.context?.currentTime || 0;
+    this.clearStreamBuffer();
+    this.clearFallbackSources();
     this.pcmCarryByte = null;
     this.pcmCarrySampleRate = null;
     this.receivedChunks = 0;
     this.scheduledChunks = 0;
     this.lastScheduledAt = 0;
+    this.queueRecoveries = 0;
     return this.snapshot();
   }
 
   snapshot() {
+    const workletMode = this.outputMode === "audio-worklet" && this.streamNode;
+    const queuedSeconds = workletMode
+      ? this.workletStats.queuedSeconds
+      : this.context ? Math.max(0, this.nextStart - this.context.currentTime) : 0;
     return {
       enabled: this.enabled,
       state: this.context?.state || "not-created",
       sinkMode: this.sinkMode,
+      outputMode: this.outputMode,
       volume: this.volume,
       receivedChunks: this.receivedChunks,
       scheduledChunks: this.scheduledChunks,
       pendingChunks: this.pending.length,
       partialPcmSampleBuffered: this.pcmCarryByte !== null,
-      queuedSeconds: this.context ? Math.max(0, this.nextStart - this.context.currentTime) : 0,
+      queuedSeconds,
+      droppedSamples: workletMode ? this.workletStats.droppedSamples : 0,
+      underflowEvents: workletMode ? this.workletStats.underflowEvents : 0,
+      activeSourceNodes: this.activeSources.size,
+      queueRecoveries: this.queueRecoveries,
       lastScheduledAt: this.lastScheduledAt,
     };
   }

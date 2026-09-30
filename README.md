@@ -91,6 +91,8 @@ See `docs/translation-engine.md` for details.
 
 Microphone capture uses `getUserMedia`. Browser-tab/system audio uses the documented `getDisplayMedia` API and depends on browser/OS support. Some browsers expose screen sharing without an audio track; Lingua Live reports that explicitly instead of silently continuing.
 
+Translated Evan PCM playback uses one long-lived AudioWorklet output node with a bounded realtime jitter buffer. The processor resamples 24 kHz PCM to the browser's actual AudioContext rate, outputs silence on underflow, and bounds backlog to avoid hour-long accumulation or thousands of short-lived source nodes. Browsers without AudioWorklet fall back to scheduled AudioBufferSource playback with explicit source cleanup and runaway-queue recovery.
+
 ## Transcripts
 
 In dedicated translation mode, source text comes from Realtime Translation input transcript events and target text comes from Realtime Translation output transcript events. Lingua Live never fabricates source text. Export preserves blank source/translation cells when one side has not arrived yet.
