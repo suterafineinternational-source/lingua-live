@@ -1,5 +1,5 @@
 import { api, clientId, reconnectDelay, setText, webSocketUrl } from "/shared.js";
-import { audioContextConstructor, decodePcm16Le, PcmQueuePlayer, unlockAudioContext } from "/pcm-playback.js?v=20260915-2";
+import { audioContextConstructor, decodePcm16Le, PcmQueuePlayer, unlockAudioContext } from "/pcm-playback.js?v=20260930-1";
 
 const el = Object.fromEntries([
   "create-panel","room-panel","create-glossary","room-glossary","create-room","start-room","end-room","save-glossary","copy-link","room-code","room-status","invite-link","qr-code","listener-count","service-status","error","event-title","scheduled-at","audience-pin","source-language","target-language","event-summary","source-transcript","translated-transcript","download-transcript","record-source","download-recording","download-summary","monitor-audio","monitor-status","share-screen","listener-statuses","host-screen-preview","screen-share-status","record-live","download-live-recording","live-recording-status"

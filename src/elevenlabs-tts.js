@@ -8,6 +8,17 @@ function safeMessage(message) {
   return String(message).replace(/xi-[A-Za-z0-9_-]+/g, "[redacted]").slice(0, 500);
 }
 
+export function reassemblePcm16Base64(audio, carry = Buffer.alloc(0)) {
+  const incoming = Buffer.from(String(audio || ""), "base64");
+  const prefix = Buffer.isBuffer(carry) && carry.length ? carry : Buffer.alloc(0);
+  const combined = prefix.length ? Buffer.concat([prefix, incoming]) : incoming;
+  const alignedLength = combined.length - (combined.length % 2);
+  return {
+    audio: alignedLength ? combined.subarray(0, alignedLength).toString("base64") : "",
+    carry: alignedLength < combined.length ? Buffer.from(combined.subarray(alignedLength)) : Buffer.alloc(0),
+  };
+}
+
 export class ElevenLabsRealtimeVoice {
   constructor({ apiKey, voiceId, modelId = "eleven_flash_v2_5", languageCode = "en", outputFormat = "pcm_24000", onAudio, onStatus, logger = console }) {
     if (!apiKey) throw new AppError(503, "ELEVENLABS_API_KEY_MISSING", "Evan voice is unavailable until ELEVENLABS_API_KEY is configured on the server.");
@@ -30,6 +41,7 @@ export class ElevenLabsRealtimeVoice {
     this.reconnectAttempt = 0;
     this.hadTextThisTurn = false;
     this.lastSendAt = 0;
+    this.pcmCarry = Buffer.alloc(0);
   }
 
   connectionUrl() {
@@ -65,6 +77,7 @@ export class ElevenLabsRealtimeVoice {
 
   connect({ initialFinish } = {}) {
     if (!this.shouldRun) return;
+    this.pcmCarry = Buffer.alloc(0);
     const socket = new WebSocket(this.connectionUrl(), { headers: { "xi-api-key": this.apiKey } });
     this.socket = socket;
     socket.on("open", () => {
@@ -106,7 +119,15 @@ export class ElevenLabsRealtimeVoice {
       this.onStatus?.({ state: "error", provider: "elevenlabs", voiceName: "Evan", message });
       return;
     }
-    if (event.audio) this.onAudio?.(event.audio, { provider: "elevenlabs", voiceName: "Evan", voiceId: this.voiceId, sampleRate: 24000 });
+    if (event.audio) {
+      const aligned = reassemblePcm16Base64(event.audio, this.pcmCarry);
+      this.pcmCarry = aligned.carry;
+      if (aligned.audio) this.onAudio?.(aligned.audio, { provider: "elevenlabs", voiceName: "Evan", voiceId: this.voiceId, sampleRate: 24000 });
+    }
+    if ((event.is_final || event.isFinal) && this.pcmCarry.length) {
+      this.logger.warn?.("[Lingua] ElevenLabs Evan ended with an incomplete PCM16 sample; dropping one trailing byte.");
+      this.pcmCarry = Buffer.alloc(0);
+    }
   }
 
   sendDelta(delta) {
@@ -180,6 +201,7 @@ export class ElevenLabsRealtimeVoice {
     this.stopKeepAlive();
     this.pendingText = "";
     this.hadTextThisTurn = false;
+    this.pcmCarry = Buffer.alloc(0);
     const socket = this.socket;
     this.socket = null;
     if (socket?.readyState === OPEN) {
