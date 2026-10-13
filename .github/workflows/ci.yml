@@ -29,6 +29,7 @@ jobs:
           node --check public/host.js
           node --check public/host-entry.js
           node --check public/low-latency-webrtc.js
+          node --check public/realtime-stall-guard.js
           node --check public/translated-relay-worklet.js
           node --check public/pcm-playback.js
           node --check public/pcm-output-worklet.js
