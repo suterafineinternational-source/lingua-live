@@ -1,0 +1,47 @@
+name: live-fast-speech-soak
+
+on:
+  push:
+    branches: [test/live-fast-speech-soak-20261013]
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install speech fixture tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg
+      - name: Generate five minutes of fast Italian speech
+        run: |
+          cat > /tmp/fast-it.txt <<'TEXT'
+          Buongiorno a tutti, questa è una prova continua di interpretazione simultanea ad alta velocità. Parleremo senza lunghe pause per verificare che il sistema mantenga il ritmo, non accumuli ritardo e continui a tradurre correttamente. Oggi analizziamo risultati commerciali, vendite online, logistica internazionale, pubblicità, assistenza clienti e sviluppo dei prodotti. Nel primo trimestre abbiamo registrato mille duecento ordini, nel secondo trimestre mille ottocento, mentre nel terzo trimestre abbiamo superato duemila quattrocento ordini. La crescita richiede decisioni rapide, controllo dei costi, organizzazione del magazzino e comunicazione precisa con clienti e fornitori. Durante una conferenza reale una persona può parlare velocemente, cambiare argomento, pronunciare numeri, nomi, date e termini tecnici senza aspettare il traduttore. Per questo la traduzione deve restare vicina alla voce originale dall'inizio alla fine della sessione. Se la rete rallenta per qualche istante il software deve privilegiare le parole più recenti e non tentare di recuperare minuti di conversazione ormai vecchia. Continuiamo quindi con un secondo argomento. Un'azienda che vende negli Stati Uniti, in Italia, in Germania, in Francia e in Spagna deve coordinare inventario, campagne pubblicitarie, prezzi, margini e spedizioni. Il responsabile commerciale osserva ogni giorno il fatturato, il tasso di conversione, il costo pubblicitario e la disponibilità dei prodotti. Se un articolo vende più velocemente del previsto, bisogna aumentare l'ordine al fornitore senza interrompere le vendite. Se invece una campagna costa troppo, bisogna correggere le parole chiave e le offerte. Ora passiamo ai dati di una riunione immaginaria. Alle nove e trenta il direttore presenta il piano, alle dieci e quindici interviene il responsabile marketing, alle undici si discutono i risultati e alle undici e quarantacinque vengono assegnati i prossimi compiti. Il budget previsto è di centoventicinquemila euro, con un obiettivo di crescita del ventidue per cento e un margine operativo superiore al diciotto per cento. La priorità rimane offrire un servizio affidabile anche quando il discorso è rapido, lungo e ricco di informazioni.
+          TEXT
+          python3 - <<'PY'
+          p = open('/tmp/fast-it.txt', encoding='utf-8').read().strip()
+          with open('/tmp/fast-it-long.txt', 'w', encoding='utf-8') as f:
+              for i in range(80):
+                  f.write(p + f" Questo è il ciclo numero {i+1}. Continuiamo senza interrompere il flusso della conversazione.\n")
+          PY
+          espeak-ng -v it -s 230 -f /tmp/fast-it-long.txt -w /tmp/fast-it.wav
+          ffmpeg -loglevel error -y -i /tmp/fast-it.wav -ar 24000 -ac 1 -f s16le -t 300 /tmp/lingua-fast-italian.pcm
+          test $(stat -c%s /tmp/lingua-fast-italian.pcm) -ge 14000000
+      - name: Run production five-minute fast-speech soak
+        env:
+          BASE_URL: https://lingua-live.onrender.com
+          PCM_FILE: /tmp/lingua-fast-italian.pcm
+          SOAK_SECONDS: 300
+          MAX_OUTPUT_GAP_MS: 12000
+        run: node scripts/live-fast-speech-soak.mjs | tee /tmp/soak-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-fast-speech-soak-report
+          path: /tmp/soak-report.txt
