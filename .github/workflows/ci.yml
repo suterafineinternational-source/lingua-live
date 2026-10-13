@@ -28,6 +28,7 @@ jobs:
           node --check src/integrations.js
           node --check public/host.js
           node --check public/host-entry.js
+          node --check public/live-transcript-preview.js
           node --check public/low-latency-webrtc.js
           node --check public/realtime-stall-guard.js
           node --check public/translated-relay-worklet.js
