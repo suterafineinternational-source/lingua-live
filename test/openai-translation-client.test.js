@@ -27,6 +27,18 @@ test("builds a documented dedicated translation client-secret request for Italia
   assert.equal(request.sourceLanguage, "it", "Lingua Live still retains source language as room metadata");
 });
 
+test("legacy generic realtime model cannot replace the dedicated WebRTC translation model", () => {
+  const request = buildTranslationClientSecretRequest({
+    apiKey: "test-key",
+    sourceLanguage: "it",
+    targetLanguage: "en",
+    model: "gpt-realtime-2.1",
+  });
+  const body = JSON.parse(request.init.body);
+  assert.equal(body.session.model, "gpt-realtime-translate");
+  assert.equal(request.model, "gpt-realtime-translate");
+});
+
 test("browser-tab translation disables microphone noise reduction", () => {
   const request = buildTranslationClientSecretRequest({
     apiKey: "test-key",
