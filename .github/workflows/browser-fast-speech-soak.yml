@@ -1,0 +1,186 @@
+name: browser-fast-speech-soak
+
+on:
+  push:
+    branches: [test/browser-fast-speech-soak-20261013]
+
+jobs:
+  browser-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install browser and speech tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg
+          npm install --no-save --package-lock=false playwright
+          npx playwright install --with-deps chromium
+      - name: Generate fast Italian microphone fixture
+        run: |
+          cat > /tmp/browser-fast-it.txt <<'TEXT'
+          Buongiorno a tutti, questa è una prova continua di traduzione simultanea ad alta velocità. Il relatore parla rapidamente e senza lunghe pause per verificare che l'interpretazione rimanga aggiornata durante tutta la sessione. Analizziamo vendite, pubblicità, logistica, assistenza clienti, sviluppo dei prodotti, prezzi, margini, inventario e spedizioni internazionali. Nel primo trimestre abbiamo registrato mille duecento ordini, nel secondo trimestre mille ottocento e nel terzo trimestre duemila quattrocento. Il budget annuale è di centoventicinquemila euro, la crescita prevista è del ventidue per cento e il margine operativo deve rimanere superiore al diciotto per cento. Durante una conferenza reale il relatore può cambiare argomento, pronunciare numeri, date e termini tecnici senza aspettare il traduttore. Il sistema deve quindi continuare a interpretare in tempo reale anche quando il discorso è veloce e prolungato. Passiamo adesso alla strategia commerciale. Se un prodotto vende più rapidamente del previsto bisogna aumentare l'ordine al fornitore, controllare il magazzino e mantenere attive le campagne. Se la pubblicità diventa troppo costosa bisogna correggere le parole chiave, le offerte e il budget giornaliero. Alle nove e trenta inizia la riunione, alle dieci e quindici interviene il responsabile marketing, alle undici vengono presentati i risultati e alle undici e quarantacinque vengono assegnate le attività successive. Continuiamo a parlare senza interrompere il flusso, perché questa prova deve dimostrare che la traduzione non si ferma dopo pochi secondi e non accumula un ritardo crescente.
+          TEXT
+          python3 - <<'PY'
+          p = open('/tmp/browser-fast-it.txt', encoding='utf-8').read().strip()
+          with open('/tmp/browser-fast-it-long.txt', 'w', encoding='utf-8') as f:
+              for i in range(100):
+                  f.write(p + f" Siamo al ciclo numero {i+1} e la conversazione continua ad alta velocità.\n")
+          PY
+          espeak-ng -v it -s 230 -f /tmp/browser-fast-it-long.txt -w /tmp/browser-fast-it-source.wav
+          ffmpeg -loglevel error -y -i /tmp/browser-fast-it-source.wav -ar 48000 -ac 1 -acodec pcm_s16le -t 330 /tmp/browser-fast-it.wav
+          test $(stat -c%s /tmp/browser-fast-it.wav) -ge 30000000
+      - name: Run five-minute Chrome/WebRTC production soak
+        env:
+          BASE_URL: https://lingua-live.onrender.com
+        run: |
+          cat > /tmp/browser-soak.cjs <<'NODE'
+          const fs = require('fs');
+          const { chromium } = require('playwright');
+
+          const durationMs = 300000;
+          const maxGapMs = 12000;
+          const report = {
+            durationSeconds: durationMs / 1000,
+            firstTranslationLatencyMs: null,
+            firstEvanAudioLatencyMs: null,
+            maxTranslationGapMs: 0,
+            lastTranslationAgeMs: null,
+            lastEvanAudioAgeMs: null,
+            maxObservedWpm: 0,
+            transports: [],
+            transportTransitions: [],
+            serviceStatuses: [],
+            browserErrors: [],
+            finalTranslationChars: 0,
+            finalEnglishAudioChunks: 0,
+          };
+
+          const browser = await chromium.launch({
+            headless: true,
+            args: [
+              '--use-fake-ui-for-media-stream',
+              '--use-fake-device-for-media-stream',
+              '--use-file-for-fake-audio-capture=/tmp/browser-fast-it.wav',
+              '--autoplay-policy=no-user-gesture-required',
+            ],
+          });
+          const context = await browser.newContext({ permissions: ['microphone'] });
+          const page = await context.newPage();
+          page.on('pageerror', error => report.browserErrors.push(`pageerror: ${error.message}`));
+          page.on('console', msg => {
+            if (msg.type() === 'error') report.browserErrors.push(`console: ${msg.text()}`);
+          });
+
+          try {
+            await page.goto(`${process.env.BASE_URL}/host`, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.fill('#event-title', 'Automated browser fast-speech soak');
+            await page.click('#create-room');
+            await page.waitForSelector('#room-panel:not(.hidden)', { timeout: 15000 });
+
+            const roomCode = (await page.textContent('#room-code') || '').trim();
+            report.room = roomCode;
+            await page.click('#start-room');
+            const startedAt = Date.now();
+
+            await page.waitForFunction(() => {
+              const t = document.querySelector('#transport-mode')?.textContent || '';
+              return t.includes('WEBRTC') || t.includes('FALLBACK') || t.includes('RECOVERY');
+            }, { timeout: 20000 });
+
+            await page.click('#monitor-audio');
+
+            let lastTranslation = '';
+            let lastTranslationAt = 0;
+            let previousTranslationAt = 0;
+            let lastAudioCount = 0;
+            let lastAudioAt = 0;
+            let lastTransport = '';
+            const deadline = startedAt + durationMs;
+
+            while (Date.now() < deadline) {
+              const now = Date.now();
+              const snapshot = await page.evaluate(() => ({
+                translated: document.querySelector('#translated-transcript')?.innerText || '',
+                transport: document.querySelector('#transport-mode')?.textContent || '',
+                service: document.querySelector('#service-status')?.textContent || '',
+                quality: document.querySelector('#quality-output')?.textContent || '',
+                wpm: document.querySelector('#quality-wpm')?.textContent || '',
+                verdict: document.querySelector('#quality-verdict')?.textContent || '',
+              }));
+
+              const meaningfulTranslation = snapshot.translated.replace(/Translated transcript will appear here\./g, '').trim();
+              if (meaningfulTranslation && meaningfulTranslation !== lastTranslation) {
+                if (!report.firstTranslationLatencyMs) report.firstTranslationLatencyMs = now - startedAt;
+                if (previousTranslationAt) report.maxTranslationGapMs = Math.max(report.maxTranslationGapMs, now - previousTranslationAt);
+                previousTranslationAt = now;
+                lastTranslationAt = now;
+                lastTranslation = meaningfulTranslation;
+              }
+
+              const audioMatch = snapshot.quality.match(/(\d+)\s+English audio chunks/i);
+              const audioCount = audioMatch ? Number(audioMatch[1]) : 0;
+              if (audioCount > lastAudioCount) {
+                if (!report.firstEvanAudioLatencyMs) report.firstEvanAudioLatencyMs = now - startedAt;
+                lastAudioAt = now;
+                lastAudioCount = audioCount;
+              }
+
+              const wpmMatch = snapshot.wpm.match(/([0-9]+(?:\.[0-9]+)?)/);
+              if (wpmMatch) report.maxObservedWpm = Math.max(report.maxObservedWpm, Number(wpmMatch[1]));
+
+              if (snapshot.transport !== lastTransport) {
+                lastTransport = snapshot.transport;
+                report.transportTransitions.push({ atMs: now - startedAt, transport: snapshot.transport });
+              }
+              if (!report.transports.includes(snapshot.transport)) report.transports.push(snapshot.transport);
+              if (snapshot.service && report.serviceStatuses.at(-1)?.status !== snapshot.service) {
+                report.serviceStatuses.push({ atMs: now - startedAt, status: snapshot.service });
+              }
+
+              if (now - startedAt > 15000 && lastTranslationAt && now - lastTranslationAt > maxGapMs) {
+                throw new Error(`Browser translation stalled for ${now - lastTranslationAt} ms while fast microphone audio continued.`);
+              }
+              if (now - startedAt > 20000 && !lastTranslationAt) {
+                throw new Error('Browser produced no translated text in the first 20 seconds.');
+              }
+              if (now - startedAt > 25000 && !lastAudioAt) {
+                throw new Error('Browser Host received no Evan audio in the first 25 seconds.');
+              }
+
+              await page.waitForTimeout(1000);
+            }
+
+            const endedAt = Date.now();
+            report.lastTranslationAgeMs = lastTranslationAt ? endedAt - lastTranslationAt : null;
+            report.lastEvanAudioAgeMs = lastAudioAt ? endedAt - lastAudioAt : null;
+            report.finalTranslationChars = lastTranslation.length;
+            report.finalEnglishAudioChunks = lastAudioCount;
+
+            if (!report.firstTranslationLatencyMs) throw new Error('No translated text was produced.');
+            if (!report.firstEvanAudioLatencyMs) throw new Error('No Evan audio was produced.');
+            if (report.maxTranslationGapMs > maxGapMs) throw new Error(`Maximum translation gap ${report.maxTranslationGapMs}ms exceeded ${maxGapMs}ms.`);
+            if (report.lastTranslationAgeMs > maxGapMs) throw new Error(`Translation was stale by ${report.lastTranslationAgeMs}ms at end of browser soak.`);
+            if (report.lastEvanAudioAgeMs > maxGapMs) throw new Error(`Evan audio was stale by ${report.lastEvanAudioAgeMs}ms at end of browser soak.`);
+            if (!report.transports.some(t => /WEBRTC|RECOVERY|FALLBACK/.test(t))) throw new Error(`No valid realtime transport became active: ${JSON.stringify(report.transports)}`);
+
+            await page.click('#end-room').catch(() => {});
+          } finally {
+            fs.writeFileSync('/tmp/browser-soak-report.json', JSON.stringify(report, null, 2));
+            console.log(JSON.stringify(report, null, 2));
+            await browser.close();
+          }
+          NODE
+          node /tmp/browser-soak.cjs | tee /tmp/browser-soak.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-fast-speech-soak-report
+          path: |
+            /tmp/browser-soak-report.json
+            /tmp/browser-soak.log
