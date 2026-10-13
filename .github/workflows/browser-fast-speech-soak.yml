@@ -39,7 +39,10 @@ jobs:
         env:
           BASE_URL: https://lingua-live.onrender.com
         run: |
-          cat > /tmp/browser-soak.cjs <<'NODE'
+          set -o pipefail
+          cat > ./browser-soak.mjs <<'NODE'
+          import { createRequire } from 'node:module';
+          const require = createRequire(process.cwd() + '/package.json');
           const fs = require('fs');
           const { chromium } = require('playwright');
 
@@ -111,7 +114,6 @@ jobs:
                 service: document.querySelector('#service-status')?.textContent || '',
                 quality: document.querySelector('#quality-output')?.textContent || '',
                 wpm: document.querySelector('#quality-wpm')?.textContent || '',
-                verdict: document.querySelector('#quality-verdict')?.textContent || '',
               }));
 
               const meaningfulTranslation = snapshot.translated.replace(/Translated transcript will appear here\./g, '').trim();
@@ -176,7 +178,7 @@ jobs:
             await browser.close();
           }
           NODE
-          node /tmp/browser-soak.cjs | tee /tmp/browser-soak.log
+          node ./browser-soak.mjs | tee /tmp/browser-soak.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
