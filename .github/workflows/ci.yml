@@ -31,6 +31,7 @@ jobs:
           node --check public/low-latency-webrtc.js
           node --check public/realtime-stall-guard.js
           node --check public/translated-relay-worklet.js
+          node --check public/pcm-worklet.js
           node --check public/pcm-playback.js
           node --check public/pcm-output-worklet.js
           node --check public/quality-bootstrap.js
@@ -39,3 +40,4 @@ jobs:
           node --check public/captions.js
           node --check public/embed.js
           node --check scripts/load-smoke.mjs
+          node --check scripts/live-fast-speech-soak.mjs

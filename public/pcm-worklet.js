@@ -1,9 +1,13 @@
+const TARGET_SAMPLE_RATE = 24000;
+const TARGET_CHUNK_MS = 200;
+const TARGET_CHUNK_SAMPLES = TARGET_SAMPLE_RATE * TARGET_CHUNK_MS / 1000;
+
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.pending = [];
     this.phase = 0;
-    this.ratio = sampleRate / 24000;
+    this.ratio = sampleRate / TARGET_SAMPLE_RATE;
   }
 
   process(inputs) {
@@ -20,8 +24,8 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     }
     this.phase -= input.length;
 
-    while (this.pending.length >= 2400) {
-      const pcm = new Int16Array(2400);
+    while (this.pending.length >= TARGET_CHUNK_SAMPLES) {
+      const pcm = new Int16Array(TARGET_CHUNK_SAMPLES);
       for (let index = 0; index < pcm.length; index += 1) {
         const sample = this.pending[index];
         pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
