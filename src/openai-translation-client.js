@@ -23,7 +23,7 @@ export function buildTranslationClientSecretRequest({ apiKey, sourceLanguage = "
           model,
           audio: {
             input: {
-              transcription: { model: DEFAULT_TRANSCRIPTION_MODEL, language: source },
+              transcription: { model: DEFAULT_TRANSCRIPTION_MODEL },
               noise_reduction: noiseReduction,
             },
             output: { language: target },
