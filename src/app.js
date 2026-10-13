@@ -154,6 +154,7 @@ export function createLinguaServer(options = {}) {
   const metrics = {
     roomsCreated: 0, roomsStarted: 0, roomsEnded: 0, websocketConnections: 0,
     transcriptEvents: 0, audioEvents: 0, upstreamErrors: 0, listenerBackpressureDrops: 0,
+    translationRecoveries: 0,
   };
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   const realtimeFactory = options.realtimeFactory || createOpenAIRealtimeFactory({
@@ -219,6 +220,7 @@ export function createLinguaServer(options = {}) {
       "# TYPE lingua_audio_events_total counter", `lingua_audio_events_total ${metrics.audioEvents}`,
       "# TYPE lingua_upstream_errors_total counter", `lingua_upstream_errors_total ${metrics.upstreamErrors}`,
       "# TYPE lingua_backpressure_drops_total counter", `lingua_backpressure_drops_total ${metrics.listenerBackpressureDrops}`,
+      "# TYPE lingua_translation_recoveries_total counter", `lingua_translation_recoveries_total ${metrics.translationRecoveries}`,
       "# TYPE process_uptime_seconds gauge", `process_uptime_seconds ${process.uptime()}`,
     ];
     response.type("text/plain; version=0.0.4").send(`${lines.join("\n")}\n`);
@@ -359,6 +361,17 @@ export function createLinguaServer(options = {}) {
     broadcastRoom(room, event);
   }
 
+  function createRealtimeForRoom(room) {
+    return realtimeFactory({
+      roomCode: room.code,
+      glossary: room.glossary,
+      sourceLanguage: room.sourceLanguage,
+      targetLanguage: room.targetLanguage,
+      onEvent: (event) => processTranslationEvent(room, event),
+      onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status, voiceProvider: voiceLocked ? "elevenlabs" : undefined, voiceName: voiceLocked ? "Evan" : undefined }),
+    });
+  }
+
   async function startRoom(room) {
     if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
     if (room.status === "live") return;
@@ -368,11 +381,7 @@ export function createLinguaServer(options = {}) {
       let realtime;
       try {
         await ensureRoomVoice(room);
-        realtime = realtimeFactory({
-          roomCode: room.code, glossary: room.glossary, sourceLanguage: room.sourceLanguage, targetLanguage: room.targetLanguage,
-          onEvent: (event) => processTranslationEvent(room, event),
-          onStatus: (status) => broadcastRoom(room, { type: "service.status", ...status, voiceProvider: voiceLocked ? "elevenlabs" : undefined, voiceName: voiceLocked ? "Evan" : undefined }),
-        });
+        realtime = createRealtimeForRoom(room);
         room.transport = "server-websocket";
         room.realtime = realtime; await realtime.start();
         if (room.status === "ended") { if (room.realtime === realtime) { realtime.close?.(); room.realtime = null; } return; }
@@ -382,6 +391,60 @@ export function createLinguaServer(options = {}) {
       }
     })();
     room.startPromise = operation; operation.finally(() => { if (room.startPromise === operation) room.startPromise = null; }).catch(() => {}); return operation;
+  }
+
+  async function fallbackRoomToServer(room, reason = "WebRTC translation stalled") {
+    if (room.status === "ended") throw new AppError(409, "ROOM_ENDED", "This room has ended.");
+    if (room.transport === "server-websocket" && room.realtime) return room;
+    if (room.recoveryPromise) return room.recoveryPromise;
+    const previousTransport = room.transport;
+    const operation = (async () => {
+      let realtime;
+      try {
+        await ensureRoomVoice(room);
+        room.realtime?.close?.();
+        room.realtime = null;
+        room.transport = "switching";
+        broadcastRoom(room, {
+          type: "service.status",
+          state: "recovering",
+          message: "Realtime WebRTC translation stalled; switching to the server translation path without replaying stale audio.",
+          transport: "switching",
+          reason: String(reason).slice(0, 300),
+        });
+        realtime = createRealtimeForRoom(room);
+        room.realtime = realtime;
+        await realtime.start();
+        if (room.status === "ended") { realtime.close?.(); if (room.realtime === realtime) room.realtime = null; return room; }
+        room.transport = "server-websocket";
+        room.status = "live";
+        room.firstTranslationTextAt = null;
+        room.firstTranslationAudioAt = null;
+        metrics.translationRecoveries += 1;
+        await storage.saveEvent(rooms.hostView(room));
+        broadcastRoom(room, {
+          type: "service.status",
+          state: "recovered",
+          message: "Automatic recovery active · server realtime translation is now receiving only current source audio.",
+          transport: "server-websocket",
+        });
+        broadcastRoom(room, { type: "room.status", room: rooms.publicView(room) });
+        return room;
+      } catch (error) {
+        metrics.upstreamErrors += 1;
+        realtime?.close?.();
+        if (room.realtime === realtime) room.realtime = null;
+        room.transport = previousTransport || null;
+        broadcastRoom(room, {
+          type: "service.error",
+          error: { code: "TRANSLATION_RECOVERY_FAILED", message: error?.message || "Automatic translation recovery failed.", retriable: true },
+        });
+        throw error;
+      }
+    })();
+    room.recoveryPromise = operation;
+    operation.finally(() => { if (room.recoveryPromise === operation) room.recoveryPromise = null; }).catch(() => {});
+    return operation;
   }
 
   app.post("/api/rooms/:code/start", async (request, response, next) => {
@@ -434,6 +497,15 @@ export function createLinguaServer(options = {}) {
         voiceId: voiceLocked ? elevenLabsVoiceId : undefined,
       });
       response.json({ room: rooms.hostView(room), transport: "webrtc", voice: voiceLocked ? { provider: "elevenlabs", name: "Evan", voiceId: elevenLabsVoiceId } : null });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/rooms/:code/fallback-server", async (request, response, next) => {
+    try {
+      const room = rooms.get(request.params.code);
+      rooms.authenticate(room, bearerToken(request));
+      await fallbackRoomToServer(room, request.body?.reason);
+      response.json({ room: rooms.hostView(room), transport: room.transport, recovered: room.transport === "server-websocket" });
     } catch (error) { next(error); }
   });
 
@@ -497,13 +569,14 @@ export function createLinguaServer(options = {}) {
           broadcastRoom(room, { type: "screen.frame", image: message.image, at: Date.now() }, { audienceOnly: true }); return;
         }
         if (message.type === "translation.event") {
-          if (room.status !== "live" || room.transport !== "webrtc") throw new AppError(409, "ROOM_NOT_LIVE", "Low-latency interpretation is not active.", { retriable: true });
+          if (room.status !== "live") return;
+          if (room.transport !== "webrtc") return;
           processTranslationEvent(room, sanitizeRelayedEvent(message.event));
           return;
         }
         if (message.type === "translation.audio") {
           if (voiceLocked) return;
-          if (room.status !== "live" || room.transport !== "webrtc") throw new AppError(409, "ROOM_NOT_LIVE", "Low-latency interpretation is not active.", { retriable: true });
+          if (room.status !== "live" || room.transport !== "webrtc") return;
           const audio = validateRelayedAudio(message.audio);
           metrics.audioEvents += 1;
           if (!room.firstTranslationAudioAt) {
@@ -515,7 +588,7 @@ export function createLinguaServer(options = {}) {
         }
         if (message.type !== "audio.append") throw new AppError(400, "UNKNOWN_MESSAGE", "Unknown host message type.");
         if (room.status !== "live") throw new AppError(409, "ROOM_NOT_LIVE", "Start interpretation before sending audio.", { retriable: true });
-        if (room.transport === "webrtc") return;
+        if (room.transport === "webrtc" || room.transport === "switching") return;
         if (!room.realtime) throw new AppError(409, "ROOM_NOT_LIVE", "Server interpretation is unavailable.", { retriable: true });
         room.realtime.appendAudio(message.audio);
       } catch (error) {
@@ -538,5 +611,5 @@ export function createLinguaServer(options = {}) {
 
   const pruneInterval = setInterval(() => rooms.prune(), Math.min(roomRetentionMs, 60_000)); pruneInterval.unref?.();
   async function close() { clearInterval(pruneInterval); for (const room of rooms.rooms.values()) endRoom(room); webSockets.close(); if (!server.listening) return; await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))); }
-  return { app, server, rooms, storage, integrations, metrics, startRoom, endRoom, close };
+  return { app, server, rooms, storage, integrations, metrics, startRoom, fallbackRoomToServer, endRoom, close };
 }
