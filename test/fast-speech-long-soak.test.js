@@ -69,7 +69,7 @@ test("accelerated logical hour of dense source audio never grows the OpenAI queu
 
   const chunksPerHourAt200ms = 60 * 60 * 5;
   for (let index = 0; index < chunksPerHourAt200ms; index += 1) {
-    session.socket.bufferedAmount = index % 30 < 10 ? MAX_UPSTREAM_BUFFERED_BYTES + 1 : 0;
+    session.socket.bufferedAmount = index % 40 < 24 ? MAX_UPSTREAM_BUFFERED_BYTES + 1 : 0;
     session.appendAudio("AAAA");
     assert.ok(session.audioQueue.length <= MAX_QUEUED_AUDIO_CHUNKS, `queue escaped realtime bound at logical chunk ${index}`);
   }
@@ -78,5 +78,5 @@ test("accelerated logical hour of dense source audio never grows the OpenAI queu
 
   assert.equal(session.audioQueue.length, 0);
   assert.ok(sent.length > 1000, "healthy windows should keep forwarding audio throughout the logical hour");
-  assert.ok(session.droppedAudioChunks > 0, "stale frames should be discarded under simulated pressure rather than accumulate latency");
+  assert.ok(session.droppedAudioChunks > 0, "stale frames should be discarded under sustained simulated pressure rather than accumulate latency");
 });
