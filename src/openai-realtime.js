@@ -2,7 +2,8 @@ import WebSocket from "ws";
 import { AppError } from "./errors.js";
 
 const OPEN = WebSocket.OPEN;
-const MAX_QUEUED_AUDIO_CHUNKS = 150;
+const MAX_QUEUED_AUDIO_CHUNKS = 12;
+const MAX_UPSTREAM_BUFFERED_BYTES = 256 * 1024;
 const DEFAULT_TRANSLATION_MODEL = "gpt-realtime-translate";
 const DEFAULT_PROMPTED_MODEL = "gpt-realtime-2.1";
 
@@ -89,6 +90,7 @@ class BaseRealtimeSession {
     this.reconnectTimer = null;
     this.initialTimer = null;
     this.audioQueue = [];
+    this.droppedAudioChunks = 0;
     this.initialSettled = false;
     this.audioChunkCount = 0;
     this.serverEventCount = 0;
@@ -126,7 +128,7 @@ class BaseRealtimeSession {
       this.reconnectAttempt = 0;
       socket.send(JSON.stringify(this.sessionUpdateEvent()));
       this.logger.info?.(`[Lingua] OpenAI websocket open; session.update sent for ${this.model}`);
-      for (const audio of this.audioQueue.splice(0)) this.sendAudio(audio);
+      this.flushAudioQueue();
       this.onStatus?.({ state: "connected", message: this.connectedMessage(), ...this.capabilities() });
       if (!this.initialSettled) {
         this.initialSettled = true;
@@ -158,6 +160,30 @@ class BaseRealtimeSession {
     }
   }
 
+  queueAudio(audio) {
+    this.audioQueue.push(audio);
+    while (this.audioQueue.length > MAX_QUEUED_AUDIO_CHUNKS) {
+      this.audioQueue.shift();
+      this.droppedAudioChunks += 1;
+    }
+    if (this.droppedAudioChunks && this.droppedAudioChunks % 25 === 1) {
+      this.onStatus?.({
+        state: "dropping_stale_audio",
+        message: "Translation input briefly fell behind; stale source audio is being discarded to stay realtime.",
+        droppedAudioChunks: this.droppedAudioChunks,
+        queuedAudioChunks: this.audioQueue.length,
+        ...this.capabilities(),
+      });
+    }
+  }
+
+  flushAudioQueue() {
+    if (this.socket?.readyState !== OPEN) return;
+    while (this.audioQueue.length && (Number(this.socket.bufferedAmount) || 0) <= MAX_UPSTREAM_BUFFERED_BYTES) {
+      this.sendAudio(this.audioQueue.shift());
+    }
+  }
+
   appendAudio(audio) {
     validateAudio(audio);
     this.audioChunkCount += 1;
@@ -167,9 +193,18 @@ class BaseRealtimeSession {
     } else if (this.audioChunkCount % 100 === 0) {
       this.logger.info?.(`[Lingua] source audio chunks received: ${this.audioChunkCount}`);
     }
-    if (this.socket?.readyState === OPEN) return this.sendAudio(audio);
-    this.audioQueue.push(audio);
-    if (this.audioQueue.length > MAX_QUEUED_AUDIO_CHUNKS) this.audioQueue.shift();
+
+    if (this.socket?.readyState !== OPEN) {
+      this.queueAudio(audio);
+      return;
+    }
+
+    this.flushAudioQueue();
+    if ((Number(this.socket.bufferedAmount) || 0) > MAX_UPSTREAM_BUFFERED_BYTES) {
+      this.queueAudio(audio);
+      return;
+    }
+    this.sendAudio(audio);
   }
 
   scheduleReconnect(closeCode) {
@@ -333,4 +368,4 @@ export function createOpenAIRealtimeFactory(config = {}) {
 const sessionUpdate = promptedSessionUpdate;
 const OpenAIRealtimeSession = OpenAIPromptedRealtimeSession;
 
-export { DEFAULT_PROMPTED_MODEL, DEFAULT_TRANSLATION_MODEL, OpenAIRealtimeSession, promptedSessionUpdate, sessionUpdate, translationInstructions, translationSessionUpdate };
+export { DEFAULT_PROMPTED_MODEL, DEFAULT_TRANSLATION_MODEL, MAX_QUEUED_AUDIO_CHUNKS, MAX_UPSTREAM_BUFFERED_BYTES, OpenAIRealtimeSession, promptedSessionUpdate, sessionUpdate, translationInstructions, translationSessionUpdate };

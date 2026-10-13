@@ -106,7 +106,7 @@
           <p id="monitor-status" class="notice">English monitor OFF.</p>
           <p id="live-recording-status" class="notice">Live recording OFF · records the shared video plus Evan translated English audio locally in this browser.</p>
           <p class="meta">Recording requires participant consent where applicable. If no screen is being shared, starting the live recording will ask you to choose a screen/window and will share it to the Audience room.</p>
-          <p class="meta">Low-latency WebRTC translation is used automatically when supported; Lingua Live falls back to the server relay if the browser cannot establish it.</p>
+          <p class="meta">Low-latency WebRTC translation is used automatically when supported; if translated output stalls while speech continues, Lingua Live automatically switches to the server realtime path instead of remaining stuck.</p>
           <p class="meta">For Zoom/Meet: select the browser-tab option above, then press Start. Chrome will ask which tab to share; select the Zoom/Meet tab and turn on tab audio.</p>
         </article>
 
@@ -157,6 +157,6 @@
         </article>
       </section>
     </main>
-    <script type="module" src="/host-entry.js?v=20260930-2"></script>
+    <script type="module" src="/host-entry.js?v=20261013-1"></script>
   </body>
 </html>

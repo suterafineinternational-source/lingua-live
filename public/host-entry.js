@@ -24,6 +24,12 @@ try {
   if (detail) detail.textContent = "The low-latency browser transport could not load; the server relay remains available.";
 }
 
+try {
+  await import("/realtime-stall-guard.js?v=20261013-1");
+} catch (error) {
+  console.warn("Realtime stall recovery guard unavailable:", error?.message || error);
+}
+
 await import("/host.js?v=20260930-2");
 
 if (!qualityLoaded) {
