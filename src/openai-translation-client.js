@@ -8,10 +8,17 @@ function safeText(value) {
   return String(value ?? "").replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]").slice(0, 500);
 }
 
+function translationModel(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate || !candidate.includes("translate")) return DEFAULT_MODEL;
+  return candidate;
+}
+
 export function buildTranslationClientSecretRequest({ apiKey, sourceLanguage = "it", targetLanguage = "en", sourceType = "microphone", model = DEFAULT_MODEL } = {}) {
   if (!apiKey) throw new AppError(503, "OPENAI_API_KEY_MISSING", "Live interpretation is unavailable until OPENAI_API_KEY is configured.");
   const source = String(sourceLanguage || "it").split("-")[0].toLowerCase();
   const target = String(targetLanguage || "en").split("-")[0].toLowerCase();
+  const selectedModel = translationModel(model);
   const noiseReduction = sourceType === "display" ? null : { type: "near_field" };
   return {
     url: CLIENT_SECRET_URL,
@@ -20,10 +27,10 @@ export function buildTranslationClientSecretRequest({ apiKey, sourceLanguage = "
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         session: {
-          model,
+          model: selectedModel,
           audio: {
             input: {
-              transcription: { model: DEFAULT_TRANSCRIPTION_MODEL, language: source },
+              transcription: { model: DEFAULT_TRANSCRIPTION_MODEL },
               noise_reduction: noiseReduction,
             },
             output: { language: target },
@@ -31,7 +38,7 @@ export function buildTranslationClientSecretRequest({ apiKey, sourceLanguage = "
         },
       }),
     },
-    model,
+    model: selectedModel,
     sourceLanguage: source,
     targetLanguage: target,
   };

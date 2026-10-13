@@ -5,7 +5,7 @@ import {
   createTranslationClientSecret,
 } from "../src/openai-translation-client.js";
 
-test("builds a dedicated translation client-secret request for Italian to English", () => {
+test("builds a documented dedicated translation client-secret request for Italian to English", () => {
   const request = buildTranslationClientSecretRequest({
     apiKey: "test-key",
     sourceLanguage: "it-IT",
@@ -20,10 +20,23 @@ test("builds a dedicated translation client-secret request for Italian to Englis
   assert.equal(body.session.model, "gpt-realtime-translate");
   assert.deepEqual(body.session.audio.input.transcription, {
     model: "gpt-realtime-whisper",
-    language: "it",
   });
+  assert.equal("language" in body.session.audio.input.transcription, false, "Realtime Translation auto-detects source language; unsupported transcription fields must not be sent");
   assert.deepEqual(body.session.audio.input.noise_reduction, { type: "near_field" });
   assert.equal(body.session.audio.output.language, "en");
+  assert.equal(request.sourceLanguage, "it", "Lingua Live still retains source language as room metadata");
+});
+
+test("legacy generic realtime model cannot replace the dedicated WebRTC translation model", () => {
+  const request = buildTranslationClientSecretRequest({
+    apiKey: "test-key",
+    sourceLanguage: "it",
+    targetLanguage: "en",
+    model: "gpt-realtime-2.1",
+  });
+  const body = JSON.parse(request.init.body);
+  assert.equal(body.session.model, "gpt-realtime-translate");
+  assert.equal(request.model, "gpt-realtime-translate");
 });
 
 test("browser-tab translation disables microphone noise reduction", () => {

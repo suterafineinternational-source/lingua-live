@@ -32,6 +32,12 @@ try {
 
 await import("/host.js?v=20260930-2");
 
+try {
+  await import("/live-transcript-preview.js?v=20261013-1");
+} catch (error) {
+  console.warn("Live transcript preview unavailable:", error?.message || error);
+}
+
 if (!qualityLoaded) {
   const verdict = document.querySelector("#quality-verdict");
   const health = document.querySelector("#quality-health");
