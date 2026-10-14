@@ -1,10 +1,14 @@
 const NativeWebSocket = window.WebSocket;
 const nativeFetch = window.fetch.bind(window);
+const originalGetUserMedia = navigator.mediaDevices?.getUserMedia?.bind(navigator.mediaDevices);
+const originalGetDisplayMedia = navigator.mediaDevices?.getDisplayMedia?.bind(navigator.mediaDevices);
 
 const STALL_AFTER_MS = 4500;
 const SPEECH_RECENT_MS = 2500;
 const WARMUP_MS = 6000;
 const CHECK_INTERVAL_MS = 750;
+const SOURCE_LEVEL_INTERVAL_MS = 250;
+const SOURCE_SPEECH_PEAK = 0.025;
 
 let transportMode = "idle";
 let directStartedAt = 0;
@@ -12,6 +16,11 @@ let lastSpeechAt = 0;
 let lastTranslationAt = 0;
 let fallbackStarted = false;
 let audioMessages = 0;
+let sourceMonitorContext = null;
+let sourceMonitorSource = null;
+let sourceMonitorAnalyser = null;
+let sourceMonitorSilent = null;
+let sourceMonitorTimer = null;
 
 function roomCredentials() {
   const code = new URLSearchParams(location.search).get("room")?.toUpperCase();
@@ -44,7 +53,21 @@ function noteSourceMessage(raw) {
   let message;
   try { message = JSON.parse(raw); } catch { return; }
   if (message?.type !== "audio.append" || typeof message.audio !== "string") return;
-  if (pcmPeak(message.audio) > 0.025) lastSpeechAt = Date.now();
+  if (pcmPeak(message.audio) > SOURCE_SPEECH_PEAK) lastSpeechAt = Date.now();
+}
+
+function noteOutgoingTranslation(raw) {
+  let message;
+  try { message = JSON.parse(raw); } catch { return; }
+  if (message?.type === "translation.audio") {
+    lastTranslationAt = Date.now();
+    return;
+  }
+  if (message?.type !== "translation.event") return;
+  const type = message.event?.type;
+  if (type === "transcript.delta" || type === "transcript.done" || type === "audio.delta") {
+    lastTranslationAt = Date.now();
+  }
 }
 
 function noteServerMessage(raw) {
@@ -53,6 +76,71 @@ function noteServerMessage(raw) {
   if (event?.type === "transcript.delta" || event?.type === "transcript.done" || event?.type === "audio.delta") {
     lastTranslationAt = Date.now();
   }
+}
+
+async function stopSourceMonitor() {
+  if (sourceMonitorTimer) clearInterval(sourceMonitorTimer);
+  sourceMonitorTimer = null;
+  try { sourceMonitorSource?.disconnect(); } catch {}
+  try { sourceMonitorAnalyser?.disconnect(); } catch {}
+  try { sourceMonitorSilent?.disconnect(); } catch {}
+  sourceMonitorSource = null;
+  sourceMonitorAnalyser = null;
+  sourceMonitorSilent = null;
+  if (sourceMonitorContext && sourceMonitorContext.state !== "closed") {
+    try { await sourceMonitorContext.close(); } catch {}
+  }
+  sourceMonitorContext = null;
+}
+
+async function monitorSourceStream(stream) {
+  await stopSourceMonitor();
+  if (!stream?.getAudioTracks?.().length) return;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+
+  try {
+    const context = new AudioContextClass();
+    const source = context.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+    const analyser = context.createAnalyser();
+    const silent = context.createGain();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.15;
+    silent.gain.value = 0;
+    source.connect(analyser).connect(silent).connect(context.destination);
+    await context.resume();
+
+    sourceMonitorContext = context;
+    sourceMonitorSource = source;
+    sourceMonitorAnalyser = analyser;
+    sourceMonitorSilent = silent;
+    const samples = new Float32Array(analyser.fftSize);
+    sourceMonitorTimer = setInterval(() => {
+      if (transportMode !== "webrtc") return;
+      analyser.getFloatTimeDomainData(samples);
+      let peak = 0;
+      for (let index = 0; index < samples.length; index += 1) peak = Math.max(peak, Math.abs(samples[index]));
+      if (peak > SOURCE_SPEECH_PEAK) lastSpeechAt = Date.now();
+    }, SOURCE_LEVEL_INTERVAL_MS);
+  } catch (error) {
+    console.warn("Realtime source-level monitor unavailable:", error?.message || error);
+  }
+}
+
+if (originalGetUserMedia) {
+  navigator.mediaDevices.getUserMedia = async (...args) => {
+    const stream = await originalGetUserMedia(...args);
+    void monitorSourceStream(stream);
+    return stream;
+  };
+}
+
+if (originalGetDisplayMedia) {
+  navigator.mediaDevices.getDisplayMedia = async (...args) => {
+    const stream = await originalGetDisplayMedia(...args);
+    void monitorSourceStream(stream);
+    return stream;
+  };
 }
 
 function setFallbackUi(message) {
@@ -110,7 +198,10 @@ class RealtimeHealthWebSocket extends NativeWebSocket {
   }
 
   send(data) {
-    if (typeof data === "string" && data.includes('"audio.append"')) noteSourceMessage(data);
+    if (typeof data === "string") {
+      if (data.includes('"audio.append"')) noteSourceMessage(data);
+      if (data.includes('"translation.')) noteOutgoingTranslation(data);
+    }
     return super.send(data);
   }
 }
@@ -124,13 +215,17 @@ window.addEventListener("lingua:transport", ({ detail }) => {
   transportMode = detail?.mode || "idle";
   if (transportMode === "webrtc") {
     directStartedAt = Date.now();
+    lastSpeechAt = 0;
     lastTranslationAt = 0;
     fallbackStarted = false;
   }
 });
 
 const timer = setInterval(checkHealth, CHECK_INTERVAL_MS);
-window.addEventListener("beforeunload", () => clearInterval(timer), { once: true });
+window.addEventListener("beforeunload", () => {
+  clearInterval(timer);
+  void stopSourceMonitor();
+}, { once: true });
 
 export function realtimeHealthSnapshot() {
   const now = Date.now();

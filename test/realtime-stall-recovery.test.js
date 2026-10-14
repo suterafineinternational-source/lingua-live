@@ -63,7 +63,7 @@ test("server realtime input drops stale audio instead of growing an unbounded la
   assert.ok(sent.length > 1, "the newest realtime window should flush when upstream pressure clears");
 });
 
-test("Host loads the stall watchdog before the live controls and the watchdog uses authenticated recovery", () => {
+test("Host loads the stall watchdog before the live controls and the watchdog observes direct WebRTC speech/output", () => {
   const entry = readFileSync(new URL("../public/host-entry.js", import.meta.url), "utf8");
   const guard = readFileSync(new URL("../public/realtime-stall-guard.js", import.meta.url), "utf8");
   assert.ok(entry.indexOf("realtime-stall-guard.js") < entry.indexOf("host.js"));
@@ -71,4 +71,10 @@ test("Host loads the stall watchdog before the live controls and the watchdog us
   assert.match(guard, /fallback-server/);
   assert.match(guard, /Authorization: `Bearer \$\{credentials\.token\}`/);
   assert.match(guard, /sourceIsSpeaking/);
+  assert.match(guard, /getUserMedia/);
+  assert.match(guard, /getDisplayMedia/);
+  assert.match(guard, /createAnalyser/);
+  assert.match(guard, /SOURCE_SPEECH_PEAK/);
+  assert.match(guard, /translation\.audio/);
+  assert.match(guard, /noteOutgoingTranslation/);
 });
