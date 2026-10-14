@@ -62,8 +62,8 @@ export class ElevenLabsRealtimeVoice {
     this.lastSendAt = 0;
     this.lastTextSentAt = 0;
     this.lastAudioAt = 0;
+    this.waitingForAudioSince = 0;
     this.lastForcedFlushAt = 0;
-    this.lastQueuedTextAt = 0;
     this.pcmCarry = Buffer.alloc(0);
     this.droppedTextChars = 0;
     this.textMessagesSent = 0;
@@ -114,6 +114,7 @@ export class ElevenLabsRealtimeVoice {
       this.reconnectAttempt = 0;
       this.lastTextSentAt = 0;
       this.lastAudioAt = 0;
+      this.waitingForAudioSince = 0;
       this.lastForcedFlushAt = 0;
       socket.send(JSON.stringify({ text: " ", generation_config: { chunk_length_schedule: [50, 90, 140, 220] } }));
       this.lastSendAt = Date.now();
@@ -154,6 +155,7 @@ export class ElevenLabsRealtimeVoice {
     }
     if (event.audio) {
       this.lastAudioAt = Date.now();
+      this.waitingForAudioSince = 0;
       this.audioChunksReceived += 1;
       const aligned = reassemblePcm16Base64(event.audio, this.pcmCarry);
       this.pcmCarry = aligned.carry;
@@ -210,7 +212,6 @@ export class ElevenLabsRealtimeVoice {
   sendDelta(delta) {
     if (!this.shouldRun || !delta) return;
     this.pendingText += String(delta);
-    this.lastQueuedTextAt = Date.now();
     this.hadTextThisTurn = true;
     this.trimPendingText();
     this.flushPendingSoon(TEXT_FLUSH_INTERVAL_MS);
@@ -220,6 +221,11 @@ export class ElevenLabsRealtimeVoice {
     if (this.pendingTimer) return;
     this.pendingTimer = setTimeout(() => this.flushPending(false), Math.max(0, delayMs));
     this.pendingTimer.unref?.();
+  }
+
+  noteTextSent(now) {
+    this.lastTextSentAt = now;
+    if (!this.waitingForAudioSince) this.waitingForAudioSince = now;
   }
 
   flushPending(flush = false) {
@@ -255,9 +261,9 @@ export class ElevenLabsRealtimeVoice {
       }));
       this.textMessagesSent += 1;
       this.lastSendAt = now;
-      this.lastTextSentAt = now;
+      this.noteTextSent(now);
       if (forceGeneration) this.lastForcedFlushAt = now;
-    } else if (shouldFlush && this.lastTextSentAt > this.lastAudioAt) {
+    } else if (shouldFlush && this.waitingForAudioSince) {
       this.socket.send(JSON.stringify({ text: " ", flush: true }));
       this.textMessagesSent += 1;
       this.lastSendAt = now;
@@ -272,7 +278,6 @@ export class ElevenLabsRealtimeVoice {
     if (!this.shouldRun) return;
     if (!this.hadTextThisTurn && fallbackText) {
       this.pendingText += String(fallbackText);
-      this.lastQueuedTextAt = Date.now();
       this.trimPendingText();
     }
     this.hadTextThisTurn = false;
@@ -281,8 +286,8 @@ export class ElevenLabsRealtimeVoice {
 
   checkVoiceLatency(now = Date.now()) {
     if (!this.shouldRun || this.socket?.readyState !== OPEN) return;
-    if (!this.lastTextSentAt || this.lastAudioAt >= this.lastTextSentAt) return;
-    if (now - this.lastTextSentAt < VOICE_FORCE_FLUSH_AFTER_MS) return;
+    if (!this.waitingForAudioSince) return;
+    if (now - this.waitingForAudioSince < VOICE_FORCE_FLUSH_AFTER_MS) return;
     if (this.lastForcedFlushAt && now - this.lastForcedFlushAt < VOICE_FORCE_FLUSH_COOLDOWN_MS) return;
 
     this.forcedFlushes += 1;
@@ -291,7 +296,7 @@ export class ElevenLabsRealtimeVoice {
       provider: "elevenlabs",
       voiceName: "Evan",
       message: "Evan audio was lagging behind translated text; forcing the buffered speech to generate now.",
-      textAgeMs: Math.max(0, now - this.lastTextSentAt),
+      textAgeMs: Math.max(0, now - this.waitingForAudioSince),
       forcedFlushes: this.forcedFlushes,
     });
     this.flushPending(true);
@@ -343,6 +348,7 @@ export class ElevenLabsRealtimeVoice {
       textMessagesSent: this.textMessagesSent,
       audioChunksReceived: this.audioChunksReceived,
       forcedFlushes: this.forcedFlushes,
+      waitingForAudioMs: this.waitingForAudioSince ? Math.max(0, Date.now() - this.waitingForAudioSince) : 0,
       lastTextSentAt: this.lastTextSentAt || null,
       lastAudioAt: this.lastAudioAt || null,
       socketBufferedBytes: Number(this.socket?.bufferedAmount) || 0,
@@ -361,6 +367,7 @@ export class ElevenLabsRealtimeVoice {
     this.pendingText = "";
     this.flushRequested = false;
     this.hadTextThisTurn = false;
+    this.waitingForAudioSince = 0;
     this.pcmCarry = Buffer.alloc(0);
     const socket = this.socket;
     this.socket = null;
