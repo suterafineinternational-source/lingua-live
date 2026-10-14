@@ -2,13 +2,27 @@ import WebSocket from "ws";
 import { AppError } from "./errors.js";
 
 const OPEN = WebSocket.OPEN;
-const TEXT_FLUSH_INTERVAL_MS = 45;
+const TEXT_FLUSH_INTERVAL_MS = 80;
 const MAX_PENDING_TEXT_CHARS = 320;
 const MAX_SOCKET_BUFFERED_BYTES = 256 * 1024;
+const VOICE_FORCE_FLUSH_AFTER_MS = 1200;
+const VOICE_FORCE_FLUSH_COOLDOWN_MS = 900;
+const VOICE_WATCHDOG_INTERVAL_MS = 200;
+const MAX_PARTIAL_WORD_CHARS = 80;
 
 function safeMessage(message) {
   if (!message) return "ElevenLabs voice service reported an error.";
   return String(message).replace(/xi-[A-Za-z0-9_-]+/g, "[redacted]").slice(0, 500);
+}
+
+function hasSpeechBoundary(character) {
+  return /[\s.,!?;:]/.test(character || "");
+}
+
+function ensureTrailingSpace(text) {
+  const value = String(text || "");
+  if (!value) return value;
+  return /\s$/.test(value) ? value : `${value} `;
 }
 
 export function reassemblePcm16Base64(audio, carry = Buffer.alloc(0)) {
@@ -41,13 +55,20 @@ export class ElevenLabsRealtimeVoice {
     this.pendingTimer = null;
     this.flushRequested = false;
     this.keepAliveTimer = null;
+    this.voiceWatchdogTimer = null;
     this.reconnectTimer = null;
     this.reconnectAttempt = 0;
     this.hadTextThisTurn = false;
     this.lastSendAt = 0;
+    this.lastTextSentAt = 0;
+    this.lastAudioAt = 0;
+    this.lastForcedFlushAt = 0;
+    this.lastQueuedTextAt = 0;
     this.pcmCarry = Buffer.alloc(0);
     this.droppedTextChars = 0;
     this.textMessagesSent = 0;
+    this.audioChunksReceived = 0;
+    this.forcedFlushes = 0;
     this.maxPendingTextSeen = 0;
   }
 
@@ -91,9 +112,13 @@ export class ElevenLabsRealtimeVoice {
       if (socket !== this.socket || !this.shouldRun) return socket.close();
       this.started = true;
       this.reconnectAttempt = 0;
+      this.lastTextSentAt = 0;
+      this.lastAudioAt = 0;
+      this.lastForcedFlushAt = 0;
       socket.send(JSON.stringify({ text: " ", generation_config: { chunk_length_schedule: [50, 90, 140, 220] } }));
       this.lastSendAt = Date.now();
       this.startKeepAlive();
+      this.startVoiceWatchdog();
       this.onStatus?.({ state: "connected", provider: "elevenlabs", voiceName: "Evan", voiceId: this.voiceId, modelId: this.modelId });
       this.logger.info?.(`[Lingua] ElevenLabs Evan connected voice=${this.voiceId} model=${this.modelId}`);
       initialFinish?.();
@@ -112,6 +137,7 @@ export class ElevenLabsRealtimeVoice {
       this.socket = null;
       this.started = false;
       this.stopKeepAlive();
+      this.stopVoiceWatchdog();
       if (initialFinish) initialFinish(new AppError(502, "EVAN_CONNECTION_FAILED", "Evan voice service disconnected during startup.", { retriable: true }));
       this.scheduleReconnect();
     });
@@ -127,6 +153,8 @@ export class ElevenLabsRealtimeVoice {
       return;
     }
     if (event.audio) {
+      this.lastAudioAt = Date.now();
+      this.audioChunksReceived += 1;
       const aligned = reassemblePcm16Base64(event.audio, this.pcmCarry);
       this.pcmCarry = aligned.carry;
       if (aligned.audio) this.onAudio?.(aligned.audio, { provider: "elevenlabs", voiceName: "Evan", voiceId: this.voiceId, sampleRate: 24000 });
@@ -155,9 +183,34 @@ export class ElevenLabsRealtimeVoice {
     });
   }
 
+  takeSpeakableText(force = false) {
+    if (!this.pendingText) return "";
+    if (force) {
+      const text = this.pendingText;
+      this.pendingText = "";
+      return text;
+    }
+
+    let cutAt = -1;
+    for (let index = this.pendingText.length - 1; index >= 0; index -= 1) {
+      if (hasSpeechBoundary(this.pendingText[index])) {
+        cutAt = index + 1;
+        break;
+      }
+    }
+    if (cutAt <= 0) {
+      if (this.pendingText.length < MAX_PARTIAL_WORD_CHARS) return "";
+      cutAt = this.pendingText.length;
+    }
+    const text = this.pendingText.slice(0, cutAt);
+    this.pendingText = this.pendingText.slice(cutAt);
+    return text;
+  }
+
   sendDelta(delta) {
     if (!this.shouldRun || !delta) return;
     this.pendingText += String(delta);
+    this.lastQueuedTextAt = Date.now();
     this.hadTextThisTurn = true;
     this.trimPendingText();
     this.flushPendingSoon(TEXT_FLUSH_INTERVAL_MS);
@@ -187,18 +240,31 @@ export class ElevenLabsRealtimeVoice {
       return;
     }
 
-    const text = this.pendingText;
     const shouldFlush = this.flushRequested;
-    this.pendingText = "";
+    const text = this.takeSpeakableText(shouldFlush);
     this.flushRequested = false;
+    const now = Date.now();
+
     if (text) {
-      this.socket.send(JSON.stringify({ text, ...(shouldFlush ? { flush: true } : {}) }));
+      const sentenceBoundary = /[.!?;:]\s*$/.test(text.trimEnd());
+      const forceGeneration = shouldFlush || sentenceBoundary;
+      this.socket.send(JSON.stringify({
+        text: ensureTrailingSpace(text),
+        try_trigger_generation: true,
+        ...(forceGeneration ? { flush: true } : {}),
+      }));
       this.textMessagesSent += 1;
-      this.lastSendAt = Date.now();
-    } else if (shouldFlush) {
+      this.lastSendAt = now;
+      this.lastTextSentAt = now;
+      if (forceGeneration) this.lastForcedFlushAt = now;
+    } else if (shouldFlush && this.lastTextSentAt > this.lastAudioAt) {
       this.socket.send(JSON.stringify({ text: " ", flush: true }));
       this.textMessagesSent += 1;
-      this.lastSendAt = Date.now();
+      this.lastSendAt = now;
+      this.lastTextSentAt = now;
+      this.lastForcedFlushAt = now;
+    } else if (this.pendingText) {
+      this.flushPendingSoon(TEXT_FLUSH_INTERVAL_MS);
     }
   }
 
@@ -206,10 +272,40 @@ export class ElevenLabsRealtimeVoice {
     if (!this.shouldRun) return;
     if (!this.hadTextThisTurn && fallbackText) {
       this.pendingText += String(fallbackText);
+      this.lastQueuedTextAt = Date.now();
       this.trimPendingText();
     }
     this.hadTextThisTurn = false;
     this.flushPending(true);
+  }
+
+  checkVoiceLatency(now = Date.now()) {
+    if (!this.shouldRun || this.socket?.readyState !== OPEN) return;
+    if (!this.lastTextSentAt || this.lastAudioAt >= this.lastTextSentAt) return;
+    if (now - this.lastTextSentAt < VOICE_FORCE_FLUSH_AFTER_MS) return;
+    if (this.lastForcedFlushAt && now - this.lastForcedFlushAt < VOICE_FORCE_FLUSH_COOLDOWN_MS) return;
+
+    this.forcedFlushes += 1;
+    this.onStatus?.({
+      state: "voice_latency_recovery",
+      provider: "elevenlabs",
+      voiceName: "Evan",
+      message: "Evan audio was lagging behind translated text; forcing the buffered speech to generate now.",
+      textAgeMs: Math.max(0, now - this.lastTextSentAt),
+      forcedFlushes: this.forcedFlushes,
+    });
+    this.flushPending(true);
+  }
+
+  startVoiceWatchdog() {
+    this.stopVoiceWatchdog();
+    this.voiceWatchdogTimer = setInterval(() => this.checkVoiceLatency(), VOICE_WATCHDOG_INTERVAL_MS);
+    this.voiceWatchdogTimer.unref?.();
+  }
+
+  stopVoiceWatchdog() {
+    clearInterval(this.voiceWatchdogTimer);
+    this.voiceWatchdogTimer = null;
   }
 
   startKeepAlive() {
@@ -245,6 +341,10 @@ export class ElevenLabsRealtimeVoice {
       maxPendingTextSeen: this.maxPendingTextSeen,
       droppedTextChars: this.droppedTextChars,
       textMessagesSent: this.textMessagesSent,
+      audioChunksReceived: this.audioChunksReceived,
+      forcedFlushes: this.forcedFlushes,
+      lastTextSentAt: this.lastTextSentAt || null,
+      lastAudioAt: this.lastAudioAt || null,
       socketBufferedBytes: Number(this.socket?.bufferedAmount) || 0,
     };
   }
@@ -257,6 +357,7 @@ export class ElevenLabsRealtimeVoice {
     this.pendingTimer = null;
     this.reconnectTimer = null;
     this.stopKeepAlive();
+    this.stopVoiceWatchdog();
     this.pendingText = "";
     this.flushRequested = false;
     this.hadTextThisTurn = false;
@@ -276,4 +377,10 @@ export function createElevenLabsVoiceFactory(options = {}) {
   return (sessionOptions = {}) => new ElevenLabsRealtimeVoice({ ...options, ...sessionOptions });
 }
 
-export { MAX_PENDING_TEXT_CHARS, MAX_SOCKET_BUFFERED_BYTES, TEXT_FLUSH_INTERVAL_MS };
+export {
+  MAX_PENDING_TEXT_CHARS,
+  MAX_SOCKET_BUFFERED_BYTES,
+  TEXT_FLUSH_INTERVAL_MS,
+  VOICE_FORCE_FLUSH_AFTER_MS,
+  VOICE_FORCE_FLUSH_COOLDOWN_MS,
+};
