@@ -79,7 +79,8 @@ test("Evan forces buffered speech generation when translated text is ahead of au
     bufferedAmount: 0,
     send(value) { sent.push(JSON.parse(value)); },
   };
-  voice.lastTextSentAt = 1_000;
+  voice.waitingForAudioSince = 1_000;
+  voice.lastTextSentAt = 2_000;
   voice.lastAudioAt = 0;
   voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
 
@@ -88,6 +89,23 @@ test("Evan forces buffered speech generation when translated text is ahead of au
   assert.equal(sent[0].flush, true);
   assert.equal(voice.forcedFlushes, 1);
   assert.ok(statuses.some((status) => status.state === "voice_latency_recovery"));
+  voice.close();
+});
+
+test("continuous newer text does not postpone Evan latency recovery", () => {
+  const sent = [];
+  const voice = new ElevenLabsRealtimeVoice({ apiKey: "test-key", voiceId: EVAN_VOICE_ID });
+  voice.shouldRun = true;
+  voice.socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(value) { sent.push(JSON.parse(value)); },
+  };
+  voice.waitingForAudioSince = 1_000;
+  voice.lastTextSentAt = 2_100;
+  voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
+  assert.equal(sent.length, 1, "newer text must not reset the age of the oldest unvoiced text");
+  assert.equal(sent[0].flush, true);
   voice.close();
 });
 
@@ -100,6 +118,7 @@ test("receiving Evan audio clears the latency condition", () => {
     bufferedAmount: 0,
     send(value) { sent.push(JSON.parse(value)); },
   };
+  voice.waitingForAudioSince = 0;
   voice.lastTextSentAt = 1_000;
   voice.lastAudioAt = 1_100;
   voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
