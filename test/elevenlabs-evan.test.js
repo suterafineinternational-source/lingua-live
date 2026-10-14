@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { createLinguaServer } from "../src/app.js";
-import { ElevenLabsRealtimeVoice } from "../src/elevenlabs-tts.js";
+import { ElevenLabsRealtimeVoice, VOICE_FORCE_FLUSH_AFTER_MS } from "../src/elevenlabs-tts.js";
 import { connectWebSocket, createFakeRealtimeFactory, createRoom, delay, listen, requestJson } from "./helpers.js";
 
 const EVAN_VOICE_ID = "TWutjvRaJqAX89preB4e";
@@ -44,6 +44,86 @@ test("Evan is configured on the realtime ElevenLabs PCM WebSocket", () => {
   assert.equal(url.searchParams.get("model_id"), "eleven_flash_v2_5");
   assert.equal(url.searchParams.get("output_format"), "pcm_24000");
   assert.equal(url.searchParams.get("language_code"), "en");
+});
+
+test("Evan batches complete word boundaries and asks ElevenLabs to trigger generation", () => {
+  const sent = [];
+  const voice = new ElevenLabsRealtimeVoice({ apiKey: "test-key", voiceId: EVAN_VOICE_ID });
+  voice.shouldRun = true;
+  voice.socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(value) { sent.push(JSON.parse(value)); },
+  };
+  voice.pendingText = "Good evening wor";
+  voice.flushPending(false);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "Good evening ");
+  assert.equal(sent[0].try_trigger_generation, true);
+  assert.equal(voice.pendingText, "wor");
+  voice.close();
+});
+
+test("Evan forces buffered speech generation when translated text is ahead of audio", () => {
+  const sent = [];
+  const statuses = [];
+  const voice = new ElevenLabsRealtimeVoice({
+    apiKey: "test-key",
+    voiceId: EVAN_VOICE_ID,
+    onStatus: (status) => statuses.push(status),
+  });
+  voice.shouldRun = true;
+  voice.socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(value) { sent.push(JSON.parse(value)); },
+  };
+  voice.waitingForAudioSince = 1_000;
+  voice.lastTextSentAt = 2_000;
+  voice.lastAudioAt = 0;
+  voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, " ");
+  assert.equal(sent[0].flush, true);
+  assert.equal(voice.forcedFlushes, 1);
+  assert.ok(statuses.some((status) => status.state === "voice_latency_recovery"));
+  voice.close();
+});
+
+test("continuous newer text does not postpone Evan latency recovery", () => {
+  const sent = [];
+  const voice = new ElevenLabsRealtimeVoice({ apiKey: "test-key", voiceId: EVAN_VOICE_ID });
+  voice.shouldRun = true;
+  voice.socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(value) { sent.push(JSON.parse(value)); },
+  };
+  voice.waitingForAudioSince = 1_000;
+  voice.lastTextSentAt = 2_100;
+  voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
+  assert.equal(sent.length, 1, "newer text must not reset the age of the oldest unvoiced text");
+  assert.equal(sent[0].flush, true);
+  voice.close();
+});
+
+test("receiving Evan audio clears the latency condition", () => {
+  const sent = [];
+  const voice = new ElevenLabsRealtimeVoice({ apiKey: "test-key", voiceId: EVAN_VOICE_ID });
+  voice.shouldRun = true;
+  voice.socket = {
+    readyState: 1,
+    bufferedAmount: 0,
+    send(value) { sent.push(JSON.parse(value)); },
+  };
+  voice.waitingForAudioSince = 0;
+  voice.lastTextSentAt = 1_000;
+  voice.lastAudioAt = 1_100;
+  voice.checkVoiceLatency(1_000 + VOICE_FORCE_FLUSH_AFTER_MS + 1);
+  assert.equal(sent.length, 0);
+  voice.close();
 });
 
 test("locked Evan mode suppresses the previous OpenAI audio and fans out only ElevenLabs PCM", async () => {
